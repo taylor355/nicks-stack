@@ -96,7 +96,15 @@ readonly STACK_ROOT="/opt/nicks-stack"
 readonly STAGE="${STACK_ROOT}/stage"
 
 readonly LOG_FILE="${NICKS_STACK_LOG:-/var/log/nicks-stack-bootstrap.log}"
-readonly LOCK_FILE="/var/lock/nicks-stack-bootstrap.lock"
+readonly LOCK_NAME="nicks-stack-bootstrap.lock"
+# Preferred lock path, then the fallbacks tried in order. Orgo images ship
+# /var/lock as a symlink to a /run/lock that does not exist yet, so nothing
+# here may assume any of these directories is present.
+readonly LOCK_CANDIDATES=(
+  "${NICKS_STACK_LOCK:-/var/lock/${LOCK_NAME}}"
+  "/run/lock/${LOCK_NAME}"
+  "/tmp/${LOCK_NAME}"
+)
 
 readonly TOTAL_STEPS=16
 
@@ -160,6 +168,8 @@ Obsidian + supervised services) onto an existing Ubuntu/Debian machine.
 Environment overrides:
   NICKS_STACK_FILES_DIR   source tree (default: <repo>/files)
   NICKS_STACK_LOG         log file    (default: /var/log/nicks-stack-bootstrap.log)
+  NICKS_STACK_LOCK        lock file   (default: /var/lock/nicks-stack-bootstrap.lock,
+                          falling back to /run/lock then /tmp)
 USAGE
 }
 
@@ -385,9 +395,47 @@ log "log file    : $LOG_FILE"
 [[ -d "$FILES_DIR" ]] || die "source tree not found: $FILES_DIR (run from a nicks-stack checkout, or set NICKS_STACK_FILES_DIR)"
 
 # Single-instance lock — two concurrent bootstraps would race on apt and on
-# the supervisor conf.
-exec 9>"$LOCK_FILE"
-flock -n 9 || die "another bootstrap is already running (lock: $LOCK_FILE)"
+# the supervisor conf. Portable across images: the lock directory is created
+# when missing (resolving a dangling symlink such as /var/lock -> /run/lock to
+# its target first), and each candidate falls through to the next, ending at
+# /tmp. Opened with >> so re-runs reuse the same file instead of truncating it.
+LOCK_PATH=""
+lock_tried=()
+for lock_candidate in "${LOCK_CANDIDATES[@]}"; do
+  lock_seen=0
+  for lock_prev in ${lock_tried[@]+"${lock_tried[@]}"}; do
+    if [[ "$lock_prev" == "$lock_candidate" ]]; then lock_seen=1; fi
+  done
+  if ((lock_seen)); then
+    continue
+  fi
+  lock_tried+=("$lock_candidate")
+
+  lock_dir="$(dirname "$lock_candidate")"
+  # readlink -f resolves a dangling symlink to the path it points at, so
+  # mkdir -p creates the real target rather than failing on EEXIST.
+  lock_real_dir="$(readlink -f "$lock_dir" 2>/dev/null || true)"
+  [[ -n "$lock_real_dir" ]] || lock_real_dir="$lock_dir"
+
+  if [[ ! -d "$lock_real_dir" ]]; then
+    if mkdir -p "$lock_real_dir" 2>/dev/null; then
+      info "created lock directory: $lock_real_dir"
+    else
+      info "lock directory unavailable, trying the next candidate: $lock_real_dir"
+      continue
+    fi
+  fi
+
+  if touch "$lock_candidate" 2>/dev/null && exec 9>>"$lock_candidate"; then
+    LOCK_PATH="$lock_candidate"
+    break
+  fi
+  info "lock file unavailable, trying the next candidate: $lock_candidate"
+done
+
+[[ -n "$LOCK_PATH" ]] || die "could not create a lock file in any of: ${LOCK_CANDIDATES[*]}"
+log "lock file   : $LOCK_PATH"
+flock -n 9 || die "another bootstrap is already running (lock: $LOCK_PATH)"
 
 export DEBIAN_FRONTEND=noninteractive
 export HOME=/root
