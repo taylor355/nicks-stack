@@ -1,10 +1,19 @@
-# Default model: Nous gpt-5.5 (key-less OAuth via `hermes auth add nous --type oauth`).
+# Default model: Anthropic claude-opus-5. ANTHROPIC_API_KEY is resolved from
+# 1Password at every hermes start (secrets.onepassword map below), so no key is
+# baked here — the same key contract as every other integration in this stack.
+#
+# Nous is still fully supported, just no longer the default: keep/redo the
+# key-less OAuth with `hermes auth add nous --type oauth`, then set
+#   default: openai/gpt-5.5 / provider: nous
+#   base_url: https://inference-api.nousresearch.com/v1
 # Dewey runs gpt-5.6-sol via openai-codex (ChatGPT OAuth) — to switch, run
 # `hermes auth add openai-codex` then set default: gpt-5.6-sol / provider: openai-codex.
+# OpenRouter stays available as a future optional provider (OPENROUTER_API_KEY
+# is already in the 1Password map) — set provider: openrouter to route through it.
 model:
-  default: openai/gpt-5.5
-  provider: nous
-  base_url: https://inference-api.nousresearch.com/v1
+  default: claude-opus-5
+  provider: anthropic
+  base_url: https://api.anthropic.com
 providers:
   vercel-ai-gateway:
     name: Vercel AI Gateway
@@ -154,6 +163,7 @@ secrets:
     # lands in ~/.hermes/.op.env — from then on it's Dewey's exact behavior.
     enabled: false
     env:
+      ANTHROPIC_API_KEY: op://Hermes/Hermes Agent Secrets/ANTHROPIC_API_KEY
       LATITUDE_API_KEY: op://Hermes/Hermes Agent Secrets/LATITUDE_API_KEY
       ORGO_API_KEY: op://Hermes/Hermes Agent Secrets/ORGO_API_KEY
       TELEGRAM_BOT_TOKEN: op://Hermes/Hermes Agent Secrets/TELEGRAM_BOT_TOKEN
