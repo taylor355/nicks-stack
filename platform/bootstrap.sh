@@ -1,0 +1,994 @@
+#!/usr/bin/env bash
+# ==========================================================================
+# Nick's Stack — bootstrap installer for an EXISTING Ubuntu/Orgo computer
+# ==========================================================================
+# Installs the exact same stack that `build_template.py` bakes into the
+# orgo.ai/v1 template, but onto a machine that is already running (no Orgo
+# Scale plan, no template publishing, no golden image required).
+#
+#   sudo bash platform/bootstrap.sh
+#
+# build_template.py is the SOURCE OF TRUTH. Nothing here is redesigned:
+# every file keeps Nick's name, every destination keeps Nick's path, the
+# install order mirrors the template's apps[].install script, the two
+# supervised services mirror apps[].services, and the two autostart entries
+# mirror apps[].autostart (delays included).
+#
+#   template concept            -> what this script does
+#   ---------------------------------------------------------------------
+#   build.apt                   -> apt-get install (xz-utils first)
+#   files[] staged at /opt/…    -> staged at /opt/nicks-stack/stage
+#   apps[].install              -> steps 3-12 below, in the same order
+#   apps[].services             -> /etc/supervisor/conf.d/nicks-stack.conf
+#   apps[].autostart            -> /root/.config/autostart/*.desktop
+#   hooks.on_first_boot         -> /var/lib/orgo stamp + runtime dirs
+#
+# Properties:
+#   * root only, Ubuntu/Debian only, Ubuntu 24.04 tested
+#   * `set -Eeuo pipefail` — stops immediately on any error
+#   * idempotent — safe to re-run; installs only what is missing
+#   * heavy logging — every action is logged to the console and to
+#     /var/log/nicks-stack-bootstrap.log
+#
+# File-ownership policy (this is what "preserve user data" means here):
+#   PRESERVED (installed only when absent, never overwritten):
+#     /root/.hermes/.env            (merged: only MISSING default keys added)
+#     /root/.hermes/.op.env         (never touched)
+#     /root/.hermes/auth.json       (never touched)
+#     /root/.hermes_agentphone_bridge/env  (merged, same rule as .env)
+#     /root/.config/obsidian/obsidian.json
+#     /root/Documents/HermesVault/** (existing notes always win)
+#   MANAGED (replaced when content differs; the previous copy is backed up
+#   under /opt/nicks-stack/backups/<timestamp>/ first):
+#     config.yaml, SOUL.md, plugins/, skills/, scripts/, local-packages/,
+#     /usr/local/bin/* launchers, /root/Desktop/*.desktop, wallpaper,
+#     the supervisor conf and the autostart entries.
+# ==========================================================================
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+umask 022
+
+# --------------------------------------------------------------------------
+# Constants — pinned exactly as build_template.py pins them
+# --------------------------------------------------------------------------
+readonly SCRIPT_NAME="nicks-stack bootstrap"
+readonly SCRIPT_VERSION="0.2.2"          # tracks build_template.py VERSION
+
+readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
+
+readonly OP_VERSION="2.34.1"
+readonly OP_ZIP_URL="https://cache.agilebits.com/dist/1P/op2/pkg/v${OP_VERSION}/op_linux_amd64_v${OP_VERSION}.zip"
+
+readonly CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
+
+readonly OBSIDIAN_DEB_URL="https://github.com/obsidianmd/obsidian-releases/releases/download/v1.12.7/obsidian_1.12.7_amd64.deb"
+readonly OBSIDIAN_DEB_SHA="3644e3ef19bcd23db4d17f7c73311b5245429391a2a48b361da93375f59712b0"
+
+# build.apt from the template + the two extras the install script apt-gets
+# itself (libsecret-1-0 for Obsidian) and needs to supervise anything.
+readonly APT_PACKAGES=(git xz-utils python3-yaml ripgrep ffmpeg libsecret-1-0)
+
+# Global npm helpers — same pins, same fallback-to-unpinned behaviour.
+readonly NPM_HELPERS=(
+  "@modelcontextprotocol/server-filesystem@2026.1.14"
+  "agent-cards@0.5.59"
+  "@xdevplatform/xurl"
+)
+
+# npx pre-warm targets (cold stdio MCP installs otherwise burn their retries)
+readonly NPX_PREWARM=("github:nickvasilescu/orgo-mcp" "agentphone-mcp")
+
+# Hermes paths — Nick's locations, unchanged.
+readonly HERMES_HOME="/root/.hermes"
+readonly VENV_PY="/usr/local/lib/hermes-agent/venv/bin/python"
+readonly BRIDGE_DIR="/root/.hermes_agentphone_bridge"
+readonly VAULT_DIR="/root/Documents/HermesVault"
+readonly OBSIDIAN_CFG_DIR="/root/.config/obsidian"
+readonly DESKTOP_DIR="/root/Desktop"
+readonly AUTOSTART_DIR="/root/.config/autostart"
+readonly WALLPAPER_DIR="/usr/share/backgrounds"
+readonly ORGO_LIB="/var/lib/orgo"
+readonly ORGO_LOG="/var/log/orgo"
+readonly PREFIX_BIN="/usr/local/bin"
+
+readonly STACK_ROOT="/opt/nicks-stack"
+readonly STAGE="${STACK_ROOT}/stage"
+
+readonly LOG_FILE="${NICKS_STACK_LOG:-/var/log/nicks-stack-bootstrap.log}"
+readonly LOCK_FILE="/var/lock/nicks-stack-bootstrap.lock"
+
+readonly TOTAL_STEPS=16
+
+# --------------------------------------------------------------------------
+# Logging
+# --------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
+  C_BLUE=$'\033[1;36m'; C_GREEN=$'\033[1;32m'
+  C_YELLOW=$'\033[1;33m'; C_RED=$'\033[1;31m'
+else
+  C_RESET=''; C_DIM=''; C_BOLD=''; C_BLUE=''; C_GREEN=''; C_YELLOW=''; C_RED=''
+fi
+
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+_ts() { date -Iseconds; }
+log()   { printf '%s[%s] %s%s\n'    "$C_DIM"    "$(_ts)" "$*" "$C_RESET"; }
+info()  { printf '%s[%s] ›  %s%s\n' "$C_DIM"    "$(_ts)" "$*" "$C_RESET"; }
+ok()    { printf '%s[%s] ✓  %s%s\n' "$C_GREEN"  "$(_ts)" "$*" "$C_RESET"; }
+skip()  { printf '%s[%s] ·  %s%s\n' "$C_DIM"    "$(_ts)" "$*" "$C_RESET"; }
+warn()  { printf '%s[%s] !  %s%s\n' "$C_YELLOW" "$(_ts)" "$*" "$C_RESET"; WARNINGS+=("$*"); }
+err()   { printf '%s[%s] ✗  %s%s\n' "$C_RED"    "$(_ts)" "$*" "$C_RESET"; }
+
+WARNINGS=()
+HEALTH_FAILURES=()
+CHANGES=0
+
+step() {
+  local n="$1"; shift
+  printf '\n%s────────────────────────────────────────────────────────────%s\n' "$C_BLUE" "$C_RESET"
+  printf '%s[%s] STEP %s/%s — %s%s\n' "$C_BLUE$C_BOLD" "$(_ts)" "$n" "$TOTAL_STEPS" "$*" "$C_RESET"
+  printf '%s────────────────────────────────────────────────────────────%s\n' "$C_BLUE" "$C_RESET"
+}
+
+die() { err "$*"; err "bootstrap ABORTED — full log: $LOG_FILE"; exit 1; }
+
+on_error() {
+  local exit_code=$? line="$1" cmd="$2"
+  err "unexpected failure (exit $exit_code) at line $line: $cmd"
+  err "bootstrap ABORTED — nothing further was changed. Full log: $LOG_FILE"
+  exit "$exit_code"
+}
+trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
+
+# --------------------------------------------------------------------------
+# Small helpers
+# --------------------------------------------------------------------------
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<USAGE
+${SCRIPT_NAME} v${SCRIPT_VERSION}
+
+Installs Nick's Stack (Hermes agent + 1Password + AgentPhone bridge +
+Obsidian + supervised services) onto an existing Ubuntu/Debian machine.
+
+  sudo bash platform/bootstrap.sh [--help]
+
+Environment overrides:
+  NICKS_STACK_FILES_DIR   source tree (default: <repo>/files)
+  NICKS_STACK_LOG         log file    (default: /var/log/nicks-stack-bootstrap.log)
+USAGE
+}
+
+# curl with retries; every download in this script goes through it.
+download() {
+  local url="$1" dest="$2"
+  info "downloading $url"
+  curl -fsSL --connect-timeout 20 --max-time 900 \
+       --retry 4 --retry-delay 2 --retry-connrefused \
+       -o "$dest" "$url"
+}
+
+BACKUP_DIR=""
+backup_of() {
+  local target="$1"
+  [[ -e "$target" ]] || return 0
+  if [[ -z "$BACKUP_DIR" ]]; then
+    BACKUP_DIR="${STACK_ROOT}/backups/$(date +%Y%m%dT%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    info "backups for this run: $BACKUP_DIR"
+  fi
+  local dest="${BACKUP_DIR}/${target#/}"
+  mkdir -p "$(dirname "$dest")"
+  cp -a "$target" "$dest"
+  info "backed up $target -> $dest"
+}
+
+# MANAGED file: install when absent, replace (after backup) when content or
+# mode drifts, skip silently when already correct.
+install_managed() {
+  local src="$1" dest="$2" mode="$3"
+  [[ -f "$src" ]] || die "source file missing: $src"
+  if [[ -f "$dest" ]] && cmp -s "$src" "$dest"; then
+    local cur; cur="$(stat -c '%a' "$dest")"
+    if [[ "$cur" == "${mode#0}" || "$cur" == "$mode" ]]; then
+      skip "unchanged: $dest"
+      return 0
+    fi
+    chmod "$mode" "$dest"
+    ok "mode fixed ($mode): $dest"
+    CHANGES=$((CHANGES + 1))
+    return 0
+  fi
+  if [[ -e "$dest" ]]; then backup_of "$dest"; fi
+  install -D -m "$mode" "$src" "$dest"
+  ok "installed: $dest ($mode)"
+  CHANGES=$((CHANGES + 1))
+}
+
+# PRESERVED file: never clobber an existing one.
+install_preserved() {
+  local src="$1" dest="$2" mode="$3"
+  [[ -f "$src" ]] || die "source file missing: $src"
+  if [[ -e "$dest" ]]; then
+    skip "preserved existing user file: $dest"
+    return 0
+  fi
+  install -D -m "$mode" "$src" "$dest"
+  ok "installed: $dest ($mode)"
+  CHANGES=$((CHANGES + 1))
+}
+
+# Mode rule copied verbatim from build_template.py payload_b64():
+#   0755 for *.sh and for anything living under a scripts/ directory,
+#   0644 for everything else.
+tree_mode() {
+  local rel="$1" root="$2"
+  if [[ "$rel" == *.sh || "$rel" == */scripts/* || "$rel" == scripts/* || "$root" == "scripts" ]]; then
+    printf '0755'
+  else
+    printf '0644'
+  fi
+}
+
+# MANAGED tree copy (mirrors `cp -rf {STAGE}/…/. dest/`): adds and updates,
+# never deletes anything the user put there.
+sync_tree_managed() {
+  local src="$1" dest="$2" root_label="$3"
+  [[ -d "$src" ]] || die "source tree missing: $src"
+  mkdir -p "$dest"
+  local count=0 rel mode
+  while IFS= read -r -d '' file; do
+    rel="${file#"$src"/}"
+    case "$rel" in
+      *__pycache__*|*.pyc|*.DS_Store) continue ;;
+    esac
+    mode="$(tree_mode "$rel" "$root_label")"
+    install_managed "$file" "$dest/$rel" "$mode"
+    count=$((count + 1))
+  done < <(find "$src" -type f -print0 | sort -z)
+  ok "$root_label: $count file(s) reconciled into $dest"
+}
+
+# PRESERVED tree copy (the vault): only files that do not exist yet.
+sync_tree_preserved() {
+  local src="$1" dest="$2" label="$3"
+  [[ -d "$src" ]] || die "source tree missing: $src"
+  mkdir -p "$dest"
+  local added=0 kept=0 rel
+  while IFS= read -r -d '' file; do
+    rel="${file#"$src"/}"
+    case "$rel" in
+      *__pycache__*|*.pyc|*.DS_Store) continue ;;
+    esac
+    if [[ -e "$dest/$rel" ]]; then
+      kept=$((kept + 1))
+      continue
+    fi
+    install -D -m 0644 "$file" "$dest/$rel"
+    ok "installed: $dest/$rel (0644)"
+    added=$((added + 1))
+    CHANGES=$((CHANGES + 1))
+  done < <(find "$src" -type f -print0 | sort -z)
+  ok "$label: $added file(s) added, $kept existing file(s) preserved"
+}
+
+# env files: create from the baked defaults when absent; otherwise append ONLY
+# the default keys that are not already defined. Never rewrites, reorders or
+# removes an existing line — that file holds the user's keys.
+merge_env_defaults() {
+  local src="$1" dest="$2" mode="$3"
+  if [[ ! -e "$dest" ]]; then
+    install -D -m "$mode" "$src" "$dest"
+    ok "installed: $dest ($mode)"
+    CHANGES=$((CHANGES + 1))
+    return 0
+  fi
+  info "existing env file found, merging missing defaults only: $dest"
+  local added=() key line
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    key="${line%%=*}"
+    if grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$dest"; then
+      continue
+    fi
+    added+=("$line")
+  done < "$src"
+  if ((${#added[@]} == 0)); then
+    skip "no missing defaults: $dest"
+  else
+    backup_of "$dest"
+    {
+      printf '\n# --- added by %s v%s on %s ---\n' "$SCRIPT_NAME" "$SCRIPT_VERSION" "$(_ts)"
+      printf '%s\n' "${added[@]}"
+    } >> "$dest"
+    for key in "${added[@]}"; do ok "added default to $dest: ${key%%=*}"; done
+    CHANGES=$((CHANGES + 1))
+  fi
+  chmod "$mode" "$dest"
+}
+
+# "pkg@1.2.3" -> "pkg";  "@scope/pkg@1.2.3" -> "@scope/pkg";  "@scope/pkg" -> itself
+npm_pkg_name() {
+  local spec="$1" body="${1#@}"
+  if [[ "$body" == *@* ]]; then
+    printf '%s' "${spec%@*}"
+  else
+    printf '%s' "$spec"
+  fi
+}
+
+apt_install_missing() {
+  local pkgs=("$@") missing=()
+  local p
+  for p in "${pkgs[@]}"; do
+    if dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "ok installed"; then
+      skip "apt package already installed: $p"
+    else
+      missing+=("$p")
+    fi
+  done
+  if ((${#missing[@]} == 0)); then
+    return 0
+  fi
+  apt_update_once
+  info "apt-get install: ${missing[*]}"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+  ok "apt installed: ${missing[*]}"
+  CHANGES=$((CHANGES + 1))
+}
+
+APT_UPDATED=0
+apt_update_once() {
+  if ((APT_UPDATED)); then
+    return 0
+  fi
+  info "apt-get update"
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq
+  APT_UPDATED=1
+}
+
+health_check() {
+  local label="$1"; shift
+  if "$@" >/dev/null 2>&1; then
+    ok "health: $label"
+  else
+    err "health: $label — FAILED"
+    HEALTH_FAILURES+=("$label")
+  fi
+}
+
+# --------------------------------------------------------------------------
+# Preflight
+# --------------------------------------------------------------------------
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) usage; die "unknown argument: $1" ;;
+esac
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(dirname "$(dirname "$SCRIPT_PATH")")"
+FILES_DIR="${NICKS_STACK_FILES_DIR:-$REPO_ROOT/files}"
+
+printf '\n%s%s v%s%s\n' "$C_BOLD" "$SCRIPT_NAME" "$SCRIPT_VERSION" "$C_RESET"
+log "started $(_ts)"
+log "script      : $SCRIPT_PATH"
+log "repo root   : $REPO_ROOT"
+log "source files: $FILES_DIR"
+log "log file    : $LOG_FILE"
+
+[[ "$(id -u)" -eq 0 ]] || die "this installer must run as root (try: sudo bash $0)"
+[[ -d "$FILES_DIR" ]] || die "source tree not found: $FILES_DIR (run from a nicks-stack checkout, or set NICKS_STACK_FILES_DIR)"
+
+# Single-instance lock — two concurrent bootstraps would race on apt and on
+# the supervisor conf.
+exec 9>"$LOCK_FILE"
+flock -n 9 || die "another bootstrap is already running (lock: $LOCK_FILE)"
+
+export DEBIAN_FRONTEND=noninteractive
+export HOME=/root
+export HERMES_HOME
+export PATH="/usr/local/bin:${HERMES_HOME}/bin:${HERMES_HOME}/node/bin:/root/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+
+# ==========================================================================
+# 1. Verify Ubuntu/Debian
+# ==========================================================================
+step 1 "Verify the host is Ubuntu/Debian"
+
+[[ -r /etc/os-release ]] || die "/etc/os-release not readable — cannot identify this OS"
+# shellcheck disable=SC1091
+. /etc/os-release
+OS_ID="${ID:-unknown}"
+OS_LIKE="${ID_LIKE:-}"
+OS_VER="${VERSION_ID:-unknown}"
+log "detected: ${PRETTY_NAME:-$OS_ID $OS_VER} (id=$OS_ID id_like=${OS_LIKE:-none})"
+
+case " $OS_ID $OS_LIKE " in
+  *" ubuntu "*|*" debian "*) ok "supported distribution: $OS_ID $OS_VER" ;;
+  *) die "unsupported distribution '$OS_ID' — this installer targets Ubuntu/Debian (Ubuntu 24.04 reference)" ;;
+esac
+
+if [[ "$OS_ID" == "ubuntu" && "$OS_VER" != "24.04" ]]; then
+  warn "reference platform is Ubuntu 24.04; this host reports $OS_VER — continuing"
+fi
+
+ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+log "architecture: $ARCH"
+[[ "$ARCH" == "amd64" || "$ARCH" == "x86_64" ]] || \
+  die "unsupported architecture '$ARCH' — the pinned op/cloudflared/Obsidian binaries are linux-amd64"
+
+have apt-get || die "apt-get not found — this installer requires a Debian-family package manager"
+
+# ==========================================================================
+# 2. Install required apt packages  (xz-utils first — Hermes needs it)
+# ==========================================================================
+step 2 "Install required apt packages"
+
+# curl is how everything else is fetched, so it comes before the rest.
+if have curl; then
+  skip "curl already present: $(curl --version | head -1)"
+else
+  apt_install_missing curl ca-certificates
+fi
+
+# ==========================================================================
+# 4 (ordered before Hermes). Install xz-utils
+# ==========================================================================
+info "xz-utils must land BEFORE the Hermes installer (it unpacks Node with it)"
+apt_install_missing xz-utils
+ok "xz-utils present: $(xz --version 2>/dev/null | head -1)"
+
+info "installing the remaining template build.apt set"
+apt_install_missing "${APT_PACKAGES[@]}"
+
+# Supervisor is how apps[].services are realised on a plain box.
+if have supervisorctl || have supervisord; then
+  skip "supervisor already present"
+else
+  warn "supervisor not found — installing it so the stack's services can be supervised"
+  apt_install_missing supervisor
+fi
+
+ok "apt phase complete"
+
+# ==========================================================================
+# 3. Install Hermes if missing
+# ==========================================================================
+step 3 "Install the Hermes agent (if missing)"
+
+if have hermes; then
+  skip "hermes already installed: $(command -v hermes)"
+  hermes --version 2>&1 | head -1 || warn "hermes --version did not report cleanly"
+else
+  info "running the official Hermes installer (non-interactive, no wizard, no Playwright)"
+  # Same invocation as apps[].install step 1 in build_template.py.
+  curl -fsSL --connect-timeout 20 --retry 4 --retry-delay 2 "$HERMES_INSTALL_URL" \
+    | bash -s -- --non-interactive --skip-setup --skip-browser
+  hash -r || true
+  have hermes || die "Hermes install finished but 'hermes' is not on PATH ($PATH)"
+  ok "hermes installed: $(command -v hermes)"
+  CHANGES=$((CHANGES + 1))
+fi
+
+[[ -x "$VENV_PY" ]] || warn "Hermes venv python not found at $VENV_PY — venv-scoped steps will be skipped"
+
+# ==========================================================================
+# 4. xz-utils  (already installed above, before Hermes — verified here)
+# ==========================================================================
+step 4 "Verify xz-utils landed before Hermes"
+have xz || die "xz-utils missing after install"
+ok "xz-utils verified: $(command -v xz)"
+
+# ==========================================================================
+# 5. Install Node helpers
+# ==========================================================================
+step 5 "Install global Node helpers (filesystem MCP, agent-cards, xurl)"
+
+if ! have npm; then
+  warn "npm not on PATH after the Hermes install — falling back to apt nodejs/npm"
+  apt_install_missing nodejs npm
+fi
+have npm || die "npm is required for the MCP helpers but could not be installed"
+log "node: $(node --version 2>/dev/null || echo 'n/a')   npm: $(npm --version 2>/dev/null || echo 'n/a')"
+
+NPM_TO_INSTALL=()
+for spec in "${NPM_HELPERS[@]}"; do
+  pkg="$(npm_pkg_name "$spec")"
+  if npm ls -g --depth=0 "$pkg" >/dev/null 2>&1; then
+    skip "npm helper already installed: $pkg"
+  else
+    NPM_TO_INSTALL+=("$spec")
+  fi
+done
+
+if ((${#NPM_TO_INSTALL[@]} > 0)); then
+  info "npm install -g ${NPM_TO_INSTALL[*]}"
+  # Pinned first, unpinned fallback — exactly as the template's install does.
+  if ! npm install -g "${NPM_TO_INSTALL[@]}"; then
+    warn "pinned npm install failed — retrying unpinned"
+    UNPINNED=()
+    for spec in "${NPM_TO_INSTALL[@]}"; do
+      UNPINNED+=("$(npm_pkg_name "$spec")")
+    done
+    npm install -g "${UNPINNED[@]}"
+  fi
+  ok "npm helpers installed"
+  CHANGES=$((CHANGES + 1))
+fi
+
+info "pre-warming npx caches so cold stdio MCP servers do not burn their retries"
+for target in "${NPX_PREWARM[@]}"; do
+  if timeout 90 npx -y "$target" </dev/null >/dev/null 2>&1; then
+    ok "npx pre-warmed: $target"
+  else
+    log "npx pre-warm finished non-zero (expected for stdio servers): $target"
+  fi
+done
+
+# qrcode inside the Hermes venv — the Telegram pairing QR renders with it.
+if [[ -x "$VENV_PY" ]]; then
+  if "$VENV_PY" -c 'import qrcode' >/dev/null 2>&1; then
+    skip "qrcode already available in the Hermes venv"
+  else
+    info "installing qrcode[pil] into the Hermes venv (uv-managed, may ship no pip)"
+    if uv pip install --python "$VENV_PY" "qrcode[pil]" >/dev/null 2>&1 \
+       || "${HERMES_HOME}/bin/uv" pip install --python "$VENV_PY" "qrcode[pil]" >/dev/null 2>&1 \
+       || "$VENV_PY" -m pip install "qrcode[pil]" >/dev/null 2>&1; then
+      ok "qrcode installed into the Hermes venv"
+      CHANGES=$((CHANGES + 1))
+    else
+      warn "could not install qrcode[pil] into $VENV_PY — the Telegram QR step may fail"
+    fi
+  fi
+fi
+
+# ==========================================================================
+# 6. Install cloudflared
+# ==========================================================================
+step 6 "Install cloudflared (the AgentPhone bridge's quick tunnel)"
+
+if have cloudflared; then
+  skip "cloudflared already installed: $(cloudflared --version 2>&1 | head -1)"
+else
+  download "$CLOUDFLARED_URL" "${PREFIX_BIN}/cloudflared.tmp"
+  chmod 0755 "${PREFIX_BIN}/cloudflared.tmp"
+  mv -f "${PREFIX_BIN}/cloudflared.tmp" "${PREFIX_BIN}/cloudflared"
+  hash -r || true
+  ok "cloudflared installed: $(cloudflared --version 2>&1 | head -1)"
+  CHANGES=$((CHANGES + 1))
+fi
+
+# ==========================================================================
+# 7. Install the 1Password CLI
+# ==========================================================================
+step 7 "Install the 1Password CLI (the stack's secret plane)"
+
+if have op; then
+  skip "op already installed: $(op --version 2>&1 | head -1)"
+else
+  # Direct binary from the official CDN, pinned to Dewey's v2.34.1 — the
+  # apt repo route fails on this base image, and the zip needs no unzip.
+  OP_TMP="$(mktemp -d)"
+  download "$OP_ZIP_URL" "$OP_TMP/op.zip"
+  info "extracting op from the release zip"
+  python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extract('op', sys.argv[2])" \
+          "$OP_TMP/op.zip" "$OP_TMP/opx"
+  install -m 0755 "$OP_TMP/opx/op" /usr/bin/op
+  rm -rf "$OP_TMP"
+  hash -r || true
+  ok "op installed: $(op --version 2>&1 | head -1)"
+  CHANGES=$((CHANGES + 1))
+fi
+
+# ==========================================================================
+# 8. Install Obsidian
+# ==========================================================================
+step 8 "Install Obsidian 1.12.7 (pinned)"
+
+if [[ -x /opt/Obsidian/obsidian ]]; then
+  skip "Obsidian already installed at /opt/Obsidian/obsidian"
+else
+  OBS_TMP="$(mktemp -d)"
+  download "$OBSIDIAN_DEB_URL" "$OBS_TMP/obsidian.deb"
+  info "verifying the .deb checksum"
+  echo "${OBSIDIAN_DEB_SHA}  ${OBS_TMP}/obsidian.deb" | sha256sum -c -
+  ok "checksum verified"
+  info "extracting the .deb into / (no dpkg install — GUI deps already present)"
+  dpkg-deb -x "$OBS_TMP/obsidian.deb" /
+  rm -rf "$OBS_TMP"
+  ok "Obsidian extracted to /opt/Obsidian"
+  CHANGES=$((CHANGES + 1))
+fi
+
+if [[ -L /usr/bin/obsidian && "$(readlink -f /usr/bin/obsidian)" == "/opt/Obsidian/obsidian" ]]; then
+  skip "/usr/bin/obsidian symlink already correct"
+else
+  ln -sf /opt/Obsidian/obsidian /usr/bin/obsidian
+  ok "linked /usr/bin/obsidian -> /opt/Obsidian/obsidian"
+  CHANGES=$((CHANGES + 1))
+fi
+
+# ==========================================================================
+# 9. Create the Hermes directories
+# ==========================================================================
+step 9 "Create the Hermes / stack directories"
+
+DIRS=(
+  "$STACK_ROOT" "$STAGE"
+  "$HERMES_HOME" "$HERMES_HOME/plugins" "$HERMES_HOME/skills" "$HERMES_HOME/scripts"
+  "$HERMES_HOME/local-packages" "$HERMES_HOME/memories" "$HERMES_HOME/state"
+  "$BRIDGE_DIR" "$VAULT_DIR" "$OBSIDIAN_CFG_DIR"
+  "$DESKTOP_DIR" "$AUTOSTART_DIR" "$WALLPAPER_DIR"
+  "$ORGO_LOG" "$ORGO_LIB"
+)
+for d in "${DIRS[@]}"; do
+  if [[ -d "$d" ]]; then
+    skip "directory exists: $d"
+  else
+    mkdir -p "$d"
+    ok "created directory: $d"
+    CHANGES=$((CHANGES + 1))
+  fi
+done
+chmod 0700 "$HERMES_HOME" 2>/dev/null || true
+
+# hooks.on_first_boot parity — the stamp other tooling looks for.
+if [[ -f "$ORGO_LIB/nicks-stack.stamp" ]]; then
+  skip "first-boot stamp already present"
+else
+  echo "nicks-stack first boot $(date -Iseconds)" > "$ORGO_LIB/nicks-stack.stamp"
+  ok "wrote $ORGO_LIB/nicks-stack.stamp"
+fi
+
+# ==========================================================================
+# 10. Copy every file from files/ into its Hermes location
+#     (staged under /opt/nicks-stack/stage first, exactly like the template)
+# ==========================================================================
+step 10 "Stage files/ and place them in Nick's Hermes locations"
+
+info "staging the source tree under $STAGE (template parity)"
+mkdir -p "$STAGE/hermes" "$STAGE/agentphone-bridge" "$STAGE/vault"
+
+# --- stage: config / identity / env ---------------------------------------
+install -D -m 0600 "$FILES_DIR/config.yaml"  "$STAGE/hermes/config.yaml"
+install -D -m 0644 "$FILES_DIR/SOUL.md"      "$STAGE/hermes/SOUL.md"
+install -D -m 0600 "$FILES_DIR/hermes.env"   "$STAGE/hermes/env"
+install -D -m 0644 "$FILES_DIR/obsidian-registry.json" "$STAGE/obsidian.json"
+ok "staged config.yaml, SOUL.md, env, obsidian.json"
+
+# --- stage: the four Dewey trees ------------------------------------------
+for pair in "plugins:hermes/plugins" "skills:hermes/skills" "scripts:hermes/scripts" "local-packages:hermes/local-packages"; do
+  src_root="${pair%%:*}"; stage_rel="${pair##*:}"
+  info "staging $src_root -> $STAGE/$stage_rel"
+  mkdir -p "$STAGE/$stage_rel"
+  while IFS= read -r -d '' f; do
+    rel="${f#"$FILES_DIR/$src_root"/}"
+    case "$rel" in *__pycache__*|*.pyc|*.DS_Store) continue ;; esac
+    install -D -m "$(tree_mode "$rel" "$src_root")" "$f" "$STAGE/$stage_rel/$rel"
+  done < <(find "$FILES_DIR/$src_root" -type f -print0 | sort -z)
+done
+ok "staged plugins/, skills/, scripts/, local-packages/"
+
+# --- stage: bridge + vault -------------------------------------------------
+install -D -m 0700 "$FILES_DIR/agentphone-bridge/agentphone_bridge.py"    "$STAGE/agentphone-bridge/agentphone_bridge.py"
+install -D -m 0600 "$FILES_DIR/agentphone-bridge/env"                     "$STAGE/agentphone-bridge/env"
+install -D -m 0644 "$FILES_DIR/agentphone-bridge/test_event_ordering.py"  "$STAGE/agentphone-bridge/test_event_ordering.py"
+while IFS= read -r -d '' f; do
+  rel="${f#"$FILES_DIR/vault"/}"
+  install -D -m 0644 "$f" "$STAGE/vault/$rel"
+done < <(find "$FILES_DIR/vault" -type f -print0 | sort -z)
+ok "staged agentphone-bridge/ and vault/"
+
+# --- place: Hermes config / identity / env --------------------------------
+info "placing staged files (our files win over anything the installer wrote)"
+install_managed  "$STAGE/hermes/config.yaml" "$HERMES_HOME/config.yaml" 0600
+install_managed  "$STAGE/hermes/SOUL.md"     "$HERMES_HOME/SOUL.md"     0644
+merge_env_defaults "$STAGE/hermes/env"       "$HERMES_HOME/.env"        0600
+
+# --- place: the four Dewey trees ------------------------------------------
+sync_tree_managed "$STAGE/hermes/plugins"        "$HERMES_HOME/plugins"        "plugins"
+sync_tree_managed "$STAGE/hermes/skills"         "$HERMES_HOME/skills"         "skills"
+sync_tree_managed "$STAGE/hermes/scripts"        "$HERMES_HOME/scripts"        "scripts"
+sync_tree_managed "$STAGE/hermes/local-packages" "$HERMES_HOME/local-packages" "local-packages"
+
+# --- place: vault + Obsidian registry (user data — never clobbered) -------
+sync_tree_preserved "$STAGE/vault" "$VAULT_DIR" "vault"
+install_preserved "$STAGE/obsidian.json" "$OBSIDIAN_CFG_DIR/obsidian.json" 0644
+
+# --- place: wallpaper ------------------------------------------------------
+install_managed "$FILES_DIR/wallpaper.jpg" "$WALLPAPER_DIR/wallpaper.jpg" 0644
+
+chmod 0600 "$HERMES_HOME/config.yaml" "$HERMES_HOME/.env"
+ok "file placement complete"
+
+# --- Latitude telemetry plugin + core reasoning_config patch --------------
+# apps[].install step 10. Non-fatal here: on an already-running box a
+# different Hermes build can move the patch anchor, and that must not take
+# the rest of the stack down with it.
+LAT_PATCH="$HERMES_HOME/scripts/latitude/install_local_telemetry_patch.sh"
+if [[ -x "$VENV_PY" && -f "$LAT_PATCH" ]]; then
+  info "installing the Latitude telemetry package + core hook patch"
+  if bash "$LAT_PATCH"; then
+    ok "Latitude telemetry installed"
+  else
+    warn "Latitude telemetry patch failed (Hermes core anchor may have moved) — stack continues without tracing"
+  fi
+else
+  warn "skipping Latitude telemetry (missing $VENV_PY or $LAT_PATCH)"
+fi
+
+# ==========================================================================
+# 11. Install the AgentPhone bridge
+# ==========================================================================
+step 11 "Install the AgentPhone webhook bridge"
+
+install_managed   "$STAGE/agentphone-bridge/agentphone_bridge.py"   "$BRIDGE_DIR/agentphone_bridge.py"   0700
+install_managed   "$STAGE/agentphone-bridge/test_event_ordering.py" "$BRIDGE_DIR/test_event_ordering.py" 0644
+merge_env_defaults "$STAGE/agentphone-bridge/env"                   "$BRIDGE_DIR/env"                    0600
+chmod 0700 "$BRIDGE_DIR/agentphone_bridge.py"
+chmod 0600 "$BRIDGE_DIR/env"
+ok "AgentPhone bridge installed (dormant until AGENTPHONE_API_KEY + AGENTPHONE_AGENT_ID exist)"
+
+# ==========================================================================
+# 12. Install the launcher scripts + desktop entries
+# ==========================================================================
+step 12 "Install the launcher scripts and desktop entries"
+
+install_managed "$FILES_DIR/gateway-run.sh"            "$PREFIX_BIN/hermes-gateway-run.sh"                  0755
+install_managed "$FILES_DIR/agentphone-bridge-run.sh"  "$PREFIX_BIN/nicks-stack-agentphone-bridge-run.sh"   0755
+install_managed "$FILES_DIR/onboard.sh"                "$PREFIX_BIN/nicks-stack-onboard.sh"                 0755
+install_managed "$FILES_DIR/op-enable.py"              "$PREFIX_BIN/nicks-stack-op-enable"                  0755
+install_managed "$FILES_DIR/onboard-launch.sh"         "$PREFIX_BIN/nicks-stack-onboard-launch.sh"          0755
+install_managed "$FILES_DIR/telegram-pair.py"          "$PREFIX_BIN/nicks-stack-telegram-pair.py"           0755
+install_managed "$FILES_DIR/obsidian-launch"           "$PREFIX_BIN/obsidian-launch"                        0755
+
+install_managed "$FILES_DIR/Obsidian.desktop"          "$DESKTOP_DIR/Obsidian.desktop"                      0755
+install_managed "$FILES_DIR/NicksStackSetup.desktop"   "$DESKTOP_DIR/NicksStackSetup.desktop"               0755
+ok "launchers and desktop entries installed"
+
+# ==========================================================================
+# 13. Install the Supervisor services
+# ==========================================================================
+step 13 "Install the Supervisor services (hermes-gateway, agentphone-bridge)"
+
+# Find the include dir supervisord actually reads.
+SUPERVISOR_CONFD=""
+for conf in /etc/supervisor/supervisord.conf /etc/supervisord.conf; do
+  [[ -f "$conf" ]] || continue
+  inc="$(awk -F= '/^\[include\]/{i=1;next} /^\[/{i=0} i && $1 ~ /^[[:space:]]*files/ {sub(/^[[:space:]]*/,"",$2); print $2; exit}' "$conf" || true)"
+  if [[ -n "$inc" ]]; then
+    SUPERVISOR_CONFD="$(dirname "${inc%% *}")"
+    [[ "$SUPERVISOR_CONFD" == /* ]] || SUPERVISOR_CONFD="$(dirname "$conf")/$SUPERVISOR_CONFD"
+    log "supervisord config: $conf   include dir: $SUPERVISOR_CONFD"
+    break
+  fi
+done
+if [[ -z "$SUPERVISOR_CONFD" ]]; then
+  SUPERVISOR_CONFD="/etc/supervisor/conf.d"
+  warn "could not read an [include] section — defaulting to $SUPERVISOR_CONFD"
+fi
+mkdir -p "$SUPERVISOR_CONFD"
+
+STACK_CONF="$SUPERVISOR_CONFD/nicks-stack.conf"
+
+# Never fight an existing definition of the same program name.
+conflicts=()
+for prog in hermes-gateway agentphone-bridge; do
+  while IFS= read -r f; do
+    if [[ "$f" == "$STACK_CONF" ]]; then
+      continue
+    fi
+    conflicts+=("$prog in $f")
+  done < <(grep -rls "^\[program:${prog}\]" "$SUPERVISOR_CONFD" 2>/dev/null || true)
+done
+
+if ((${#conflicts[@]} > 0)); then
+  for c in "${conflicts[@]}"; do
+    warn "supervisor program already defined elsewhere: $c"
+  done
+  warn "leaving the existing supervisor definitions in place — NOT writing $STACK_CONF"
+else
+  SUPERVISOR_TMP="$(mktemp)"
+  cat > "$SUPERVISOR_TMP" <<'SUPERVISORCONF'
+; ==========================================================================
+; Nick's Stack — supervised services
+; Mirrors apps[].services in build_template.py: both run as root with
+; restart=always. Both wrappers self-gate (the gateway waits for config.yaml
+; + auth.json; the bridge waits for its two AgentPhone keys), so neither
+; crash-loops before the stack is configured.
+; Managed by platform/bootstrap.sh — edits here are overwritten on re-run.
+; ==========================================================================
+
+[program:hermes-gateway]
+command=/usr/local/bin/hermes-gateway-run.sh
+directory=/root
+user=root
+autostart=true
+autorestart=true
+startsecs=10
+startretries=999
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=30
+environment=HOME="/root",HERMES_HOME="/root/.hermes",USER="root"
+stdout_logfile=/var/log/orgo/hermes-gateway.out.log
+stderr_logfile=/var/log/orgo/hermes-gateway.err.log
+stdout_logfile_maxbytes=10MB
+stderr_logfile_maxbytes=10MB
+
+[program:agentphone-bridge]
+command=/usr/local/bin/nicks-stack-agentphone-bridge-run.sh
+directory=/root/.hermes_agentphone_bridge
+user=root
+autostart=true
+autorestart=true
+startsecs=10
+startretries=999
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=30
+environment=HOME="/root",USER="root"
+stdout_logfile=/root/.hermes_agentphone_bridge/supervisor.out.log
+stderr_logfile=/root/.hermes_agentphone_bridge/supervisor.err.log
+stdout_logfile_maxbytes=10MB
+stderr_logfile_maxbytes=10MB
+SUPERVISORCONF
+  install_managed "$SUPERVISOR_TMP" "$STACK_CONF" 0644
+  rm -f "$SUPERVISOR_TMP"
+fi
+
+# Make supervisord pick the programs up (and start it if it is not running).
+if supervisorctl status >/dev/null 2>&1; then
+  info "supervisorctl reread / update"
+  supervisorctl reread || warn "supervisorctl reread reported an error"
+  supervisorctl update || warn "supervisorctl update reported an error"
+  supervisorctl status || true
+  ok "supervisor services registered"
+elif have supervisord; then
+  warn "supervisord is not responding — attempting to start it"
+  if have systemctl && systemctl start supervisor >/dev/null 2>&1; then
+    ok "started supervisor via systemd"
+  elif service supervisor start >/dev/null 2>&1; then
+    ok "started supervisor via service(8)"
+  else
+    warn "could not start supervisord automatically — start it, then run: supervisorctl reread && supervisorctl update"
+  fi
+  supervisorctl reread >/dev/null 2>&1 || true
+  supervisorctl update >/dev/null 2>&1 || true
+else
+  warn "no supervisord on this host — services are configured at $STACK_CONF but nothing is supervising them"
+fi
+
+# ==========================================================================
+# 14. Enable autostart
+# ==========================================================================
+step 14 "Enable desktop autostart (onboarding +10s, Obsidian +16s)"
+
+# apps[].autostart parity: same two commands, same delays, as XDG entries.
+write_autostart() {
+  local file="$1" name="$2" comment="$3" delay="$4" exec_path="$5"
+  local tmp; tmp="$(mktemp)"
+  cat > "$tmp" <<AUTOSTART
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=$name
+Comment=$comment
+Exec=/bin/sh -c 'sleep $delay; exec $exec_path'
+Terminal=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=$delay
+AUTOSTART
+  install_managed "$tmp" "$file" 0644
+  rm -f "$tmp"
+}
+
+write_autostart "$AUTOSTART_DIR/nicks-stack-onboard.desktop" \
+  "Nick's Stack Setup" "First-boot onboarding (Nous, Telegram, 1Password)" \
+  10 "$PREFIX_BIN/nicks-stack-onboard-launch.sh"
+
+write_autostart "$AUTOSTART_DIR/nicks-stack-obsidian.desktop" \
+  "Obsidian" "Hermes Knowledge Base" \
+  16 "$PREFIX_BIN/obsidian-launch"
+
+ok "autostart entries enabled in $AUTOSTART_DIR"
+
+# ==========================================================================
+# 15. Hermes health checks
+# ==========================================================================
+step 15 "Run Hermes health checks"
+
+health_check "hermes binary on PATH"            command -v hermes
+health_check "hermes --version responds"        bash -c 'hermes --version >/dev/null 2>&1'
+health_check "config.yaml present"              test -s "$HERMES_HOME/config.yaml"
+health_check "config.yaml is mode 0600"         bash -c "[ \"\$(stat -c '%a' '$HERMES_HOME/config.yaml')\" = 600 ]"
+health_check "config.yaml parses as YAML"       python3 -c "import yaml,sys;yaml.safe_load(open('$HERMES_HOME/config.yaml'))"
+health_check "SOUL.md present"                  test -s "$HERMES_HOME/SOUL.md"
+health_check ".env present and mode 0600"       bash -c "[ -s '$HERMES_HOME/.env' ] && [ \"\$(stat -c '%a' '$HERMES_HOME/.env')\" = 600 ]"
+health_check "plugins tree populated"           bash -c "[ -n \"\$(ls -A '$HERMES_HOME/plugins' 2>/dev/null)\" ]"
+health_check "skills tree populated"            bash -c "[ -n \"\$(ls -A '$HERMES_HOME/skills' 2>/dev/null)\" ]"
+health_check "scripts tree populated"           bash -c "[ -n \"\$(ls -A '$HERMES_HOME/scripts' 2>/dev/null)\" ]"
+health_check "local-packages tree populated"    bash -c "[ -n \"\$(ls -A '$HERMES_HOME/local-packages' 2>/dev/null)\" ]"
+health_check "Obsidian vault present"           test -d "$VAULT_DIR"
+health_check "AgentPhone bridge installed"      test -x "$BRIDGE_DIR/agentphone_bridge.py"
+health_check "gateway wrapper installed"        test -x "$PREFIX_BIN/hermes-gateway-run.sh"
+health_check "bridge wrapper installed"         test -x "$PREFIX_BIN/nicks-stack-agentphone-bridge-run.sh"
+health_check "onboarding script installed"      test -x "$PREFIX_BIN/nicks-stack-onboard.sh"
+health_check "op CLI works"                     bash -c 'op --version >/dev/null 2>&1'
+health_check "cloudflared works"                bash -c 'cloudflared --version >/dev/null 2>&1'
+health_check "Obsidian binary present"          test -x /opt/Obsidian/obsidian
+health_check "filesystem MCP helper present"    bash -c 'npm ls -g --depth=0 @modelcontextprotocol/server-filesystem >/dev/null 2>&1'
+
+# Informational only — these are what the onboarding is FOR.
+if [[ -s "$HERMES_HOME/auth.json" ]]; then
+  ok "model account already connected (auth.json present)"
+else
+  info "model account not connected yet — the onboarding does this (step 1/4)"
+fi
+if grep -q '^TELEGRAM_BOT_TOKEN=..' "$HERMES_HOME/.env" 2>/dev/null; then
+  ok "Telegram bot already configured"
+else
+  info "Telegram bot not configured yet — the onboarding does this (step 2/4)"
+fi
+if [[ -s "$HERMES_HOME/.op.env" ]]; then
+  ok "1Password service-account token present"
+else
+  info "1Password not connected yet — optional, the onboarding does this (step 3/4)"
+fi
+
+if supervisorctl status >/dev/null 2>&1; then
+  for prog in hermes-gateway agentphone-bridge; do
+    line="$(supervisorctl status "$prog" 2>/dev/null || true)"
+    if [[ -n "$line" ]]; then
+      log "supervisor: $line"
+    else
+      warn "supervisor program not registered: $prog"
+    fi
+  done
+fi
+
+# ==========================================================================
+# 16. Summary + next onboarding command
+# ==========================================================================
+step 16 "Summary"
+
+log "changes applied this run: $CHANGES"
+
+if ((${#WARNINGS[@]} > 0)); then
+  printf '\n%sWarnings (%s):%s\n' "$C_YELLOW" "${#WARNINGS[@]}" "$C_RESET"
+  for w in "${WARNINGS[@]}"; do printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$w"; done
+fi
+
+if ((${#HEALTH_FAILURES[@]} > 0)); then
+  printf '\n%sHealth check failures (%s):%s\n' "$C_RED" "${#HEALTH_FAILURES[@]}" "$C_RESET"
+  for f in "${HEALTH_FAILURES[@]}"; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$f"; done
+  err "bootstrap finished with failing health checks — review the log: $LOG_FILE"
+  exit 1
+fi
+
+cat <<BANNER
+
+${C_GREEN}${C_BOLD}Nick's Stack is installed.${C_RESET}
+
+  Hermes home     : $HERMES_HOME
+  Vault           : $VAULT_DIR
+  Bridge          : $BRIDGE_DIR
+  Services        : hermes-gateway, agentphone-bridge (supervisor)
+  Log             : $LOG_FILE
+
+${C_BOLD}Next — run the onboarding:${C_RESET}
+
+  ${C_BOLD}sudo ${PREFIX_BIN}/nicks-stack-onboard.sh${C_RESET}
+
+It connects your Nous account, mints your Telegram bot from a QR code, and
+(optionally) wires 1Password. On a desktop session it also opens by itself,
+and 'Nick's Stack Setup' is on the desktop.
+
+BANNER
+
+ok "bootstrap complete"
+exit 0
