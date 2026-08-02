@@ -561,6 +561,122 @@ runs, edit `files/config.yaml` → `model.default` in the repo, keep
 `routing.yaml`'s `smart` mode in sync (verify.sh cross-checks them and fails if
 they drift), then redeploy and restart.
 
+## 7. Enabling local AI (Ollama) on a company VM
+
+Ollama is a **managed platform service** here, exactly like the Hermes gateway
+and the AgentPhone bridge: one `[program:ollama]` block in
+`/etc/supervisor/conf.d/nicks-stack.conf`, started by
+`/usr/local/bin/nicks-stack-ollama-run.sh`, restarted on boot and on crash.
+
+> **This platform uses Supervisor, not systemd.** `bootstrap.sh` reports what
+> PID 1 actually is, and Ollama's upstream installer writes a `systemd` unit
+> that would never start here — bootstrap disables that unit if it appears, so
+> only the supervised service ever binds port 11434. Never run `ollama serve`
+> by hand on a deployed VM: two servers fight over the port and the supervised
+> one loses silently. Use `supervisorctl` (below).
+
+### Nothing is downloaded unless you ask
+
+Bootstrap never installs Ollama and never pulls a model by default, and it
+assumes no internet. Three separate, explicit opt-ins:
+
+| Flag | What it does | Needs network |
+|---|---|---|
+| `--with-ollama` | Supervises an Ollama that is **already installed** | no |
+| `--install-ollama` | Also installs the Ollama binary | yes |
+| `--ollama-models "a b"` | Also pulls those models | yes |
+
+The service wrapper is **dormant-gated**: if the program is configured before
+Ollama exists, the service sleeps instead of crash-looping, and starts serving
+the moment the binary appears.
+
+### Case A — VM that already has Ollama (this machine)
+
+```bash
+cd ~/nicks-stack && git pull origin template-v1
+sudo bash platform/bootstrap.sh --with-ollama
+sudo supervisorctl reread && sudo supervisorctl update
+sudo supervisorctl status ollama
+```
+
+`bootstrap.sh` auto-detects an installed Ollama, so a plain
+`sudo bash platform/update.sh` on this machine also picks it up.
+
+### Case B — fresh company VM, air-gapped or metered
+
+```bash
+# 1. Install Ollama however your policy allows (mirror, image, manual .tgz)
+# 2. Copy the model blobs to the new VM (no download needed):
+#    from a machine that already has them —
+sudo tar -C /usr/share/ollama/.ollama -czf ollama-models.tgz models
+#    on the new VM —
+sudo tar -C /usr/share/ollama/.ollama -xzf ollama-models.tgz
+
+# 3. Supervise it — no network touched:
+sudo bash platform/bootstrap.sh --with-ollama
+sudo supervisorctl reread && sudo supervisorctl update
+```
+
+### Case C — fresh company VM with internet
+
+```bash
+sudo bash platform/bootstrap.sh \
+  --install-ollama \
+  --ollama-models "qwen3:4b nomic-embed-text"
+sudo supervisorctl reread && sudo supervisorctl update
+sudo bash platform/verify.sh
+sudo nicks-stack-provider-doctor --provider ollama
+```
+
+### The standard model set
+
+| Model | Role | Pull command |
+|---|---|---|
+| `qwen3:4b` | Chat / reasoning — what `local` mode routes to | `ollama pull qwen3:4b` |
+| `nomic-embed-text` | Embeddings — for retrieval, **not** chat | `ollama pull nomic-embed-text` |
+
+Embedding models cannot answer a prompt. Both the router and the doctor exclude
+them from inference automatically, so an Ollama with *only* `nomic-embed-text`
+reports "pull a chat model" rather than routing into a model that will fail.
+
+### Supervisor commands
+
+```bash
+sudo supervisorctl status                     # all three services
+sudo supervisorctl status ollama
+sudo supervisorctl start ollama
+sudo supervisorctl stop ollama
+sudo supervisorctl restart ollama
+sudo supervisorctl reread && sudo supervisorctl update   # after a conf change
+sudo tail -50 /var/log/orgo/ollama.err.log    # why it will not start
+```
+
+### Verification
+
+```bash
+sudo bash platform/verify.sh                  # section 9 = Local AI (Ollama)
+sudo nicks-stack-provider-doctor --provider ollama
+sudo nicks-stack-route run local -q "Summarise: the quarterly renewal is due."
+```
+
+`verify.sh` checks: Ollama installed · serving under Supervisor · API reachable
+· models installed · `qwen3` present · `nomic-embed-text` present. Those checks
+are **critical** on a machine configured for local AI (a supervised `ollama`
+program exists) and **advisory** everywhere else, so VMs that do not use local
+AI still pass.
+
+### Turning it off
+
+```bash
+sudo supervisorctl stop ollama
+# then remove the [program:ollama] block from
+# /etc/supervisor/conf.d/nicks-stack.conf, or redeploy from a machine
+# without Ollama installed and without --with-ollama
+sudo supervisorctl reread && sudo supervisorctl update
+```
+
+`local` mode then reports unavailable and never falls back to a paid route.
+
 ---
 
 ## Troubleshooting
@@ -579,6 +695,10 @@ they drift), then redeploy and restart.
 | `nicks-stack-route run deep` exits 3 | By design — premium routes need explicit consent | Re-run with `--confirm` after the user agrees |
 | `nicks-stack-route run local` exits 4 | By design — Ollama is not installed | Use `fast`/`smart`, or wait for the Ollama sprint |
 | verify.sh: "falls back into premium mode" | A `routing.yaml` edit lets a cheap route escalate into `deep` | Point the fallback at `smart` and redeploy |
+| `supervisorctl status ollama` shows no such process | The program is not in the conf on this machine | `sudo bash platform/bootstrap.sh --with-ollama` then `supervisorctl reread && supervisorctl update` |
+| ollama service stuck in STARTING/BACKOFF | The binary is missing — the wrapper sleeps by design | Install Ollama, or check `/var/log/orgo/ollama.err.log` |
+| Port 11434 already in use | A hand-started `ollama serve` is racing the supervised one | `pkill -f "ollama serve"` then `sudo supervisorctl restart ollama` |
+| local mode says "only embedding models are installed" | Only `nomic-embed-text` is pulled | `ollama pull qwen3:4b` |
 | Obsidian will not launch on the desktop | Sandbox flags | `obsidian-launch` already passes `--no-sandbox --disable-gpu`; check `DISPLAY` is `:99` |
 
 Logs worth reading, in order:
@@ -611,6 +731,11 @@ sudo bash platform/update.sh --op-write-test --check-only
 # Rollback
 ls -1t /opt/nicks-stack/backups/
 # then Option A (restore files) or Option B (git checkout + update.sh) above
+
+# Local AI
+sudo bash platform/bootstrap.sh --with-ollama
+sudo supervisorctl reread && sudo supervisorctl update
+sudo supervisorctl status ollama
 
 # Routing
 nicks-stack-provider-doctor

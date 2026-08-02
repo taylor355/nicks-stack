@@ -81,7 +81,8 @@ readonly SECRET_FILES=(
 readonly OP_VAULT="${NICKS_STACK_OP_VAULT:-Hermes}"
 readonly OP_ITEM="${NICKS_STACK_OP_ITEM:-Hermes Agent Secrets}"
 
-readonly SERVICES=(hermes-gateway agentphone-bridge)
+# ollama is restarted only when the machine actually has that program.
+readonly SERVICES=(hermes-gateway agentphone-bridge ollama)
 
 readonly LOG_FILE="${NICKS_STACK_UPDATE_LOG:-/var/log/nicks-stack-update.log}"
 readonly LOCK_NAME="nicks-stack-update.lock"
@@ -452,7 +453,8 @@ for name in "${MANAGED_FILES[@]}"; do copy_into_backup "$HERMES_HOME/$name"; don
 for name in "${MANAGED_TREES[@]}"; do copy_into_backup "$HERMES_HOME/$name"; done
 for launcher in \
   hermes-gateway-run.sh nicks-stack-agentphone-bridge-run.sh nicks-stack-onboard.sh \
-  nicks-stack-op-enable nicks-stack-onboard-launch.sh nicks-stack-telegram-pair.py obsidian-launch
+  nicks-stack-op-enable nicks-stack-onboard-launch.sh nicks-stack-telegram-pair.py obsidian-launch \
+  nicks-stack-ollama-run.sh
 do
   copy_into_backup "$PREFIX_BIN/$launcher"
 done
@@ -530,6 +532,10 @@ if ((DO_RESTART)); then
     supervisorctl reread >/dev/null 2>&1 || warn "supervisorctl reread reported an error"
     supervisorctl update >/dev/null 2>&1 || warn "supervisorctl update reported an error"
     for svc in "${SERVICES[@]}"; do
+      if ! supervisorctl status "$svc" >/dev/null 2>&1; then
+        log "service not configured on this machine, skipping: $svc"
+        continue
+      fi
       if supervisorctl restart "$svc" >/dev/null 2>&1; then
         ok "restarted: $svc"
       else

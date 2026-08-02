@@ -171,4 +171,9 @@ providers:
     provider: custom:ollama      # config.yaml → providers.ollama (local, key-less)
     host: http://127.0.0.1:11434
     enabled: true
-    models: []                   # discovered from /api/tags — never assumed
+    # Preference order. Whatever is listed here is only used if it is actually
+    # pulled; otherwise the first chat-capable installed model wins. Embedding
+    # models (nomic-embed-text and friends) are never selected for inference —
+    # they cannot answer a prompt.
+    models:
+      - qwen3:4b

@@ -199,6 +199,8 @@ class Result:
         self.inference_via = ""
         self.reply = ""
         self.skipped = False
+        self.service_state = ""    # supervisor program state, when managed
+        self.serving = False
 
     def step(self, label: str, ok: bool, detail: str = "") -> bool:
         self.steps.append({"step": label, "ok": ok, "detail": short(detail)})
@@ -217,6 +219,9 @@ class Result:
             "models_discovered": len(self.models),
             "inference_via": self.inference_via,
             "reply": self.reply,
+            "service_state": self.service_state,
+            "serving": self.serving,
+            "models": self.models,
             "steps": self.steps,
         }
 
@@ -403,6 +408,32 @@ def check_gemini(spec: dict, args) -> Result:
     return res
 
 
+# Embedding models (nomic-embed-text, all-minilm, …) are installed alongside
+# chat models but cannot answer a prompt. Never select one for inference.
+EMBED_HINTS = ("embed", "embedding", "bge-", "gte-", "minilm")
+
+
+def is_chat_model(name: str) -> bool:
+    lowered = name.lower()
+    return not any(hint in lowered for hint in EMBED_HINTS)
+
+
+def supervisor_state(program: str) -> str:
+    """Supervisor is this platform's init for services — report what it says."""
+    if not shutil.which("supervisorctl"):
+        return ""
+    try:
+        proc = subprocess.run(["supervisorctl", "status", program],
+                              capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    line = (proc.stdout or "").strip()
+    if not line:
+        return ""
+    parts = line.split()
+    return parts[1] if len(parts) > 1 else ""
+
+
 def ollama_host(spec: dict) -> str:
     host = os.environ.get("OLLAMA_HOST", "").strip() or spec.get("host") or "http://127.0.0.1:11434"
     if not host.startswith("http"):
@@ -418,7 +449,13 @@ def check_ollama(spec: dict, args) -> Result:
         res.step("daemon reachable", False, "ollama binary not installed")
         return res
 
+    res.service_state = supervisor_state("ollama")
+    if res.service_state:
+        res.step("supervised service", res.service_state == "RUNNING",
+                 f"supervisorctl status ollama → {res.service_state}")
+
     status, body, err = http_json(f"{host}/api/tags", timeout=min(args.timeout, 15))
+    res.serving = status == 200
     if not res.step("daemon reachable", status == 200, f"{host} → HTTP {status} {short(err, 90)}"):
         return res
 
@@ -428,8 +465,14 @@ def check_ollama(spec: dict, args) -> Result:
                     if res.models else "no models pulled — run: ollama pull <model>"):
         return res
 
-    preferred = spec.get("models") or []
-    chosen = next((m for m in preferred if m in res.models), res.models[0])
+    chat_models = [m for m in res.models if is_chat_model(m)]
+    if not res.step("chat-capable model present", bool(chat_models),
+                    "only embedding models are installed — pull a chat model, e.g. ollama pull qwen3:4b"
+                    if not chat_models else f"{len(chat_models)} of {len(res.models)} are chat models"):
+        return res
+
+    preferred = [m for m in (spec.get("models") or []) if is_chat_model(m)]
+    chosen = next((m for m in preferred if m in chat_models), chat_models[0])
     res.checked_model = chosen
 
     if args.no_inference:
@@ -573,6 +616,27 @@ def main() -> int:
             print(f"  via  : {res.inference_via}")
         if res.reply:
             print(f"  reply: {res.reply}")
+
+        # Ollama is a platform service, not just an API endpoint — report the
+        # service state and the installed model set explicitly.
+        if res.name == "ollama":
+            print()
+            print("Status:")
+            if res.serving:
+                svc = f" (supervisor: {res.service_state})" if res.service_state else ""
+                ollama_status = f"Running{svc}"
+            elif res.service_state:
+                ollama_status = f"Not serving (supervisor: {res.service_state})"
+            else:
+                ollama_status = "Not running"
+            print(ollama_status)
+            print()
+            print("Models:")
+            if res.models:
+                for m in res.models:
+                    print(m)
+            else:
+                print("none installed")
         print()
 
     print("Current routing mode : " + state["mode"])

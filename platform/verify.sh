@@ -59,6 +59,7 @@ readonly ROUTING_FILE="${HERMES_HOME}/routing.yaml"
 readonly ROUTE_CLI="${PREFIX_BIN}/nicks-stack-route"
 readonly DOCTOR_CLI="${PREFIX_BIN}/nicks-stack-provider-doctor"
 readonly OLLAMA_URL="${OLLAMA_HOST:-http://127.0.0.1:11434}/api/tags"
+SUPERVISOR_CONFD="/etc/supervisor/conf.d"
 
 QUIET=0
 
@@ -456,21 +457,6 @@ check_critical "routing CLI installed"   test -x "$ROUTE_CLI"
 check_critical "provider doctor installed" test -x "$DOCTOR_CLI"
 check_advisory "routing skill installed"   test -f "$HERMES_HOME/skills/provider-routing/SKILL.md"
 
-# Local Ollama: presence is advisory (the stack works without it), but a
-# half-installed daemon should be visible. Read-only GET, no inference.
-if have curl; then
-  if OLLAMA_TAGS="$(curl -fsS --max-time 5 "$OLLAMA_URL" 2>/dev/null)"; then
-    OLLAMA_COUNT="$(printf '%s' "$OLLAMA_TAGS" | grep -o '"name"' | wc -l | tr -d ' ')"
-    if [[ "$OLLAMA_COUNT" -gt 0 ]]; then
-      pass "Ollama daemon reachable with $OLLAMA_COUNT model(s) installed"
-    else
-      warn "Ollama daemon is running but no model is pulled — local mode will fail cleanly"
-    fi
-  else
-    note "Ollama not running — local mode reports unavailable (expected unless you use it)"
-  fi
-fi
-
 if [[ -r "$ROUTING_FILE" ]]; then
   # Cross-checks routing.yaml against config.yaml: every mode must name a
   # provider Hermes actually has enabled and a key the secret plane can
@@ -544,7 +530,84 @@ else
 fi
 
 # ==========================================================================
-section "9. Onboarding state (informational)"
+section "9. Local AI (Ollama)"
+# ==========================================================================
+# Ollama is optional: the stack runs fine without it. These checks are
+# CRITICAL only when the machine is configured for local AI (a supervised
+# ollama program exists) — otherwise they are advisory.
+OLLAMA_MANAGED=0
+if grep -qs '^\[program:ollama\]' "${SUPERVISOR_CONFD:-/etc/supervisor/conf.d}"/*.conf 2>/dev/null; then
+  OLLAMA_MANAGED=1
+fi
+
+ollama_check() {
+  # ollama_check <label> <ok 0|1> <detail>
+  local label="$1" state="$2" detail="$3"
+  if [[ "$state" == "1" ]]; then
+    pass "$label${detail:+ — $detail}"
+  elif ((OLLAMA_MANAGED)); then
+    fail "$label${detail:+ — $detail}"
+  else
+    warn "$label${detail:+ — $detail}"
+  fi
+}
+
+if ((OLLAMA_MANAGED)); then
+  note "this machine is configured for local AI (supervised ollama program present)"
+else
+  note "local AI not configured — checks below are advisory (enable with: bootstrap.sh --with-ollama)"
+fi
+
+# 1. installed
+if have ollama; then
+  ollama_check "Ollama installed" 1 "$(ollama --version 2>&1 | head -1)"
+else
+  ollama_check "Ollama installed" 0 "binary not on PATH"
+fi
+
+# 2. serving (supervisor state — this platform uses Supervisor, not systemd)
+if ((SUPERVISOR_UP)) && supervisorctl status ollama >/dev/null 2>&1; then
+  OLLAMA_SUP_LINE="$(supervisorctl status ollama 2>/dev/null || true)"
+  case "$OLLAMA_SUP_LINE" in
+    *RUNNING*) ollama_check "Ollama serving (supervisor)" 1 "$(printf '%s' "$OLLAMA_SUP_LINE" | tr -s ' ')" ;;
+    *)         ollama_check "Ollama serving (supervisor)" 0 "$(printf '%s' "$OLLAMA_SUP_LINE" | tr -s ' ')" ;;
+  esac
+elif ((OLLAMA_MANAGED)); then
+  ollama_check "Ollama serving (supervisor)" 0 "program not registered — run: supervisorctl reread && supervisorctl update"
+else
+  note "Ollama not under supervisor on this machine"
+fi
+
+# 3. API reachable + 4. installed models
+OLLAMA_MODELS_LIST=""
+if have curl && OLLAMA_TAGS_JSON="$(curl -fsS --max-time 5 "$OLLAMA_URL" 2>/dev/null)"; then
+  ollama_check "Ollama API reachable" 1 "$OLLAMA_URL"
+  OLLAMA_MODELS_LIST="$(printf '%s' "$OLLAMA_TAGS_JSON" \
+    | tr ',' '\n' | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u)"
+  OLLAMA_MODEL_COUNT="$(printf '%s' "$OLLAMA_MODELS_LIST" | grep -c . || true)"
+  if [[ "${OLLAMA_MODEL_COUNT:-0}" -gt 0 ]]; then
+    ollama_check "Ollama models installed" 1 "$OLLAMA_MODEL_COUNT: $(printf '%s' "$OLLAMA_MODELS_LIST" | tr '\n' ' ')"
+  else
+    ollama_check "Ollama models installed" 0 "none pulled — see DEPLOYMENT.md → Enabling local AI"
+  fi
+else
+  ollama_check "Ollama API reachable" 0 "$OLLAMA_URL did not answer"
+fi
+
+# 5. + 6. the two models this platform expects. Never auto-pulled: a missing
+# model is reported with the exact command, never fixed silently.
+for want in qwen3 nomic-embed-text; do
+  if printf '%s' "$OLLAMA_MODELS_LIST" | grep -q "^${want}"; then
+    pass "model present: ${want} ($(printf '%s' "$OLLAMA_MODELS_LIST" | grep "^${want}" | tr '\n' ' '))"
+  elif [[ -n "$OLLAMA_MODELS_LIST" ]]; then
+    warn "model missing: ${want} — pull it with: ollama pull ${want}"
+  else
+    note "model ${want}: cannot check (no model list)"
+  fi
+done
+
+# ==========================================================================
+section "10. Onboarding state (informational)"
 # ==========================================================================
 if [[ -s "$HERMES_HOME/auth.json" ]]; then
   pass "model account connected (auth.json present)"
@@ -564,7 +627,7 @@ else
 fi
 
 # ==========================================================================
-section "10. User data inventory (must survive every update)"
+section "11. User data inventory (must survive every update)"
 # ==========================================================================
 note "vault notes        : $(count_files "$VAULT_DIR") file(s) in $VAULT_DIR"
 note "memories           : $(count_files "$HERMES_HOME/memories") file(s)"

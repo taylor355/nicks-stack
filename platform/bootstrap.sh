@@ -62,6 +62,8 @@ readonly OP_ZIP_URL="https://cache.agilebits.com/dist/1P/op2/pkg/v${OP_VERSION}/
 
 readonly CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64"
 
+readonly OLLAMA_INSTALL_URL="https://ollama.com/install.sh"
+
 readonly OBSIDIAN_DEB_URL="https://github.com/obsidianmd/obsidian-releases/releases/download/v1.12.7/obsidian_1.12.7_amd64.deb"
 readonly OBSIDIAN_DEB_SHA="3644e3ef19bcd23db4d17f7c73311b5245429391a2a48b361da93375f59712b0"
 
@@ -164,6 +166,11 @@ Installs Nick's Stack (Hermes agent + 1Password + AgentPhone bridge +
 Obsidian + supervised services) onto an existing Ubuntu/Debian machine.
 
   sudo bash platform/bootstrap.sh [--help]
+
+Local AI (Ollama) — all optional, nothing is downloaded unless you ask:
+  --with-ollama           supervise an already-installed Ollama (no network)
+  --install-ollama        also install the Ollama binary (needs the network)
+  --ollama-models "A B"   pull these models after install (needs the network)
 
 Environment overrides:
   NICKS_STACK_FILES_DIR   source tree (default: <repo>/files)
@@ -374,11 +381,24 @@ health_check() {
 # --------------------------------------------------------------------------
 # Preflight
 # --------------------------------------------------------------------------
-case "${1:-}" in
-  -h|--help) usage; exit 0 ;;
-  "") ;;
-  *) usage; die "unknown argument: $1" ;;
-esac
+WITH_OLLAMA=0        # configure the supervised Ollama service
+INSTALL_OLLAMA=0     # also install the Ollama binary (needs the network)
+OLLAMA_PULL=""       # optional, explicit model pulls (needs the network)
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --with-ollama)    WITH_OLLAMA=1 ;;
+    --install-ollama) INSTALL_OLLAMA=1; WITH_OLLAMA=1 ;;
+    --ollama-models)
+      shift
+      [[ $# -gt 0 ]] || { usage >&2; die "--ollama-models needs a value"; }
+      OLLAMA_PULL="$1"; WITH_OLLAMA=1
+      ;;
+    *) usage; die "unknown argument: $1" ;;
+  esac
+  shift
+done
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_ROOT="$(dirname "$(dirname "$SCRIPT_PATH")")"
@@ -462,6 +482,29 @@ esac
 
 if [[ "$OS_ID" == "ubuntu" && "$OS_VER" != "24.04" ]]; then
   warn "reference platform is Ubuntu 24.04; this host reports $OS_VER — continuing"
+fi
+
+# Init system — this stack supervises its services with Supervisor. Knowing
+# which init is actually running matters for Ollama: the upstream installer
+# writes a systemd unit that would never start here (and, on a box where
+# systemd IS running, would fight our supervised service for port 11434).
+INIT_SYSTEM="unknown"
+INIT_COMM="$(cat /proc/1/comm 2>/dev/null || echo unknown)"
+case "$INIT_COMM" in
+  systemd) INIT_SYSTEM="systemd" ;;
+  supervisord) INIT_SYSTEM="supervisord" ;;
+  *) INIT_SYSTEM="$INIT_COMM" ;;
+esac
+if have supervisorctl || have supervisord; then
+  HAS_SUPERVISOR=1
+else
+  HAS_SUPERVISOR=0
+fi
+log "init system: PID 1 is '$INIT_COMM'; supervisor present: $((HAS_SUPERVISOR))"
+if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+  log "systemd is PID 1, but this stack still manages its services through Supervisor"
+else
+  ok "Supervisor-managed environment (no systemd) — services come from $PWD/platform/bootstrap.sh"
 fi
 
 ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
@@ -661,6 +704,64 @@ else
 fi
 
 # ==========================================================================
+# 8b. Ollama — optional local AI, never installed or downloaded implicitly
+# ==========================================================================
+if ((WITH_OLLAMA)) || have ollama; then
+  step 8 "Local AI (Ollama)"
+
+  if have ollama; then
+    skip "Ollama already installed: $(command -v ollama)"
+    WITH_OLLAMA=1
+  elif ((INSTALL_OLLAMA)); then
+    info "installing Ollama from $OLLAMA_INSTALL_URL (explicitly requested)"
+    if curl -fsSL --connect-timeout 20 --retry 3 --retry-delay 2 "$OLLAMA_INSTALL_URL" | sh; then
+      hash -r || true
+      if have ollama; then
+        ok "Ollama installed: $(ollama --version 2>&1 | head -1)"
+        CHANGES=$((CHANGES + 1))
+      else
+        warn "Ollama installer finished but the binary is not on PATH"
+      fi
+    else
+      warn "Ollama install failed (no network?) — the service will stay dormant until it is installed"
+    fi
+    # The upstream installer drops a systemd unit. On a Supervisor box it never
+    # runs; where systemd IS present it would race our supervised service for
+    # port 11434, so make sure it is not enabled.
+    if have systemctl && systemctl list-unit-files 2>/dev/null | grep -q '^ollama.service'; then
+      systemctl disable --now ollama.service >/dev/null 2>&1 || true
+      warn "disabled the systemd ollama.service — this stack supervises Ollama itself"
+    fi
+  else
+    info "Ollama is not installed. Pass --install-ollama to install it, or install it"
+    info "yourself; the supervised service stays dormant until the binary exists."
+  fi
+
+  if [[ -n "$OLLAMA_PULL" ]]; then
+    if have ollama; then
+      # Explicit pulls only. Never implied by --with-ollama, never a default.
+      for model in $OLLAMA_PULL; do
+        if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$model"; then
+          skip "model already present: $model"
+        else
+          info "pulling model (network required): $model"
+          if ollama pull "$model"; then
+            ok "pulled: $model"
+            CHANGES=$((CHANGES + 1))
+          else
+            warn "could not pull '$model' — pull it later with: ollama pull $model"
+          fi
+        fi
+      done
+    else
+      warn "--ollama-models given but Ollama is not installed — skipping pulls"
+    fi
+  fi
+else
+  log "Ollama not requested and not installed — skipping (use --with-ollama to enable)"
+fi
+
+# ==========================================================================
 # 9. Create the Hermes directories
 # ==========================================================================
 step 9 "Create the Hermes / stack directories"
@@ -796,6 +897,7 @@ install_managed "$FILES_DIR/op-enable.py"              "$PREFIX_BIN/nicks-stack-
 install_managed "$FILES_DIR/onboard-launch.sh"         "$PREFIX_BIN/nicks-stack-onboard-launch.sh"          0755
 install_managed "$FILES_DIR/telegram-pair.py"          "$PREFIX_BIN/nicks-stack-telegram-pair.py"           0755
 install_managed "$FILES_DIR/obsidian-launch"           "$PREFIX_BIN/obsidian-launch"                        0755
+install_managed "$FILES_DIR/ollama-run.sh"             "$PREFIX_BIN/nicks-stack-ollama-run.sh"              0755
 
 # Routing CLI: a symlink so the tree copy stays the single source of the code.
 ROUTE_TARGET="$HERMES_HOME/scripts/provider-routing/route.py"
@@ -854,7 +956,7 @@ STACK_CONF="$SUPERVISOR_CONFD/nicks-stack.conf"
 
 # Never fight an existing definition of the same program name.
 conflicts=()
-for prog in hermes-gateway agentphone-bridge; do
+for prog in hermes-gateway agentphone-bridge ollama; do
   while IFS= read -r f; do
     if [[ "$f" == "$STACK_CONF" ]]; then
       continue
@@ -914,6 +1016,35 @@ stderr_logfile=/root/.hermes_agentphone_bridge/supervisor.err.log
 stdout_logfile_maxbytes=10MB
 stderr_logfile_maxbytes=10MB
 SUPERVISORCONF
+
+  # Ollama is a managed platform service like the other two, but only when it
+  # is wanted: writing a program for a machine that will never run local AI
+  # just adds a permanently-stopped entry to `supervisorctl status`.
+  if ((WITH_OLLAMA)) || have ollama; then
+    cat >> "$SUPERVISOR_TMP" <<'SUPERVISOROLLAMA'
+
+[program:ollama]
+command=/usr/local/bin/nicks-stack-ollama-run.sh
+directory=/root
+user=root
+autostart=true
+autorestart=true
+startsecs=10
+startretries=999
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=30
+environment=HOME="/root",USER="root"
+stdout_logfile=/var/log/orgo/ollama.out.log
+stderr_logfile=/var/log/orgo/ollama.err.log
+stdout_logfile_maxbytes=10MB
+stderr_logfile_maxbytes=10MB
+SUPERVISOROLLAMA
+    info "supervisor conf includes the ollama service"
+  else
+    info "supervisor conf omits ollama (not requested, not installed)"
+  fi
+
   install_managed "$SUPERVISOR_TMP" "$STACK_CONF" 0644
   rm -f "$SUPERVISOR_TMP"
 fi
@@ -998,6 +1129,9 @@ health_check "onboarding script installed"      test -x "$PREFIX_BIN/nicks-stack
 health_check "routing map installed"            test -s "$HERMES_HOME/routing.yaml"
 health_check "routing CLI installed"            test -x "$PREFIX_BIN/nicks-stack-route"
 health_check "provider doctor installed"        test -x "$PREFIX_BIN/nicks-stack-provider-doctor"
+if ((WITH_OLLAMA)) || have ollama; then
+  health_check "ollama wrapper installed"       test -x "$PREFIX_BIN/nicks-stack-ollama-run.sh"
+fi
 health_check "op CLI works"                     bash -c 'op --version >/dev/null 2>&1'
 health_check "cloudflared works"                bash -c 'cloudflared --version >/dev/null 2>&1'
 health_check "Obsidian binary present"          test -x /opt/Obsidian/obsidian
@@ -1021,7 +1155,9 @@ else
 fi
 
 if supervisorctl status >/dev/null 2>&1; then
-  for prog in hermes-gateway agentphone-bridge; do
+  SERVICE_LIST=(hermes-gateway agentphone-bridge)
+  if ((WITH_OLLAMA)) || have ollama; then SERVICE_LIST+=(ollama); fi
+  for prog in "${SERVICE_LIST[@]}"; do
     line="$(supervisorctl status "$prog" 2>/dev/null || true)"
     if [[ -n "$line" ]]; then
       log "supervisor: $line"

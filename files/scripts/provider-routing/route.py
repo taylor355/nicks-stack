@@ -149,6 +149,14 @@ def op_mapped(key_env: str) -> bool:
     return bool(op.get("enabled")) and key_env in (op.get("env") or {})
 
 
+EMBED_HINTS = ("embed", "embedding", "bge-", "gte-", "minilm")
+
+
+def is_chat_model(name: str) -> bool:
+    lowered = name.lower()
+    return not any(hint in lowered for hint in EMBED_HINTS)
+
+
 def ollama_probe(mode: dict) -> tuple[bool, list[str], str]:
     """Detect the local Ollama daemon and what is pulled on it.
     Returns (reachable, installed_models, detail). Never raises."""
@@ -208,9 +216,19 @@ def mode_availability(cfg: dict, name: str) -> dict:
         info["detail"] = detail
         if not reachable:
             return info
-        # Pin from routing.yaml when set, otherwise whatever is pulled locally.
-        info["model"] = mode.get("model") or models[0]
+        # Pin from routing.yaml when set, otherwise the first chat-capable
+        # model pulled locally. Embedding models are never selected — they
+        # cannot answer a prompt.
+        chat = [m for m in models if is_chat_model(m)]
+        if not chat:
+            info["detail"] = (
+                f"only embedding models are installed ({', '.join(models)}) — "
+                "pull a chat model, e.g. ollama pull qwen3:4b"
+            )
+            return info
+        info["model"] = mode.get("model") or chat[0]
         info["available"] = True
+        info["detail"] = f"{len(chat)} chat model(s): {', '.join(chat[:4])}"
         return info
 
     if execution == "specialist-cli":
