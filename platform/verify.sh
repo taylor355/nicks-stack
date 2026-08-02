@@ -55,6 +55,8 @@ readonly OP_VAULT="${NICKS_STACK_OP_VAULT:-Hermes}"
 readonly OP_ITEM="${NICKS_STACK_OP_ITEM:-Hermes Agent Secrets}"
 
 readonly BRIDGE_HEALTH_URL="http://127.0.0.1:8787/health"
+readonly ROUTING_FILE="${HERMES_HOME}/routing.yaml"
+readonly ROUTE_CLI="${PREFIX_BIN}/nicks-stack-route"
 
 QUIET=0
 
@@ -445,7 +447,43 @@ else
 fi
 
 # ==========================================================================
-section "7. Services"
+section "7. Provider routing (config only — no model calls, no secrets)"
+# ==========================================================================
+check_critical "routing map present"     test -s "$ROUTING_FILE"
+check_critical "routing CLI installed"   test -x "$ROUTE_CLI"
+check_advisory "routing skill installed" test -f "$HERMES_HOME/skills/provider-routing/SKILL.md"
+
+if [[ -r "$ROUTING_FILE" ]]; then
+  # Cross-checks routing.yaml against config.yaml: every mode must name a
+  # provider Hermes actually has enabled and a key the secret plane can
+  # resolve. Names and booleans only — never a key value.
+  ROUTING_REPORT="$(python3 "$HERMES_HOME/scripts/provider-routing/verify_routes.py" \
+                      "$ROUTING_FILE" "$HERMES_HOME/config.yaml" 2>/dev/null || true)"
+  if [[ -z "$ROUTING_REPORT" ]]; then
+    fail "routing map could not be evaluated (unparseable, or verify_routes.py missing)"
+  else
+    while IFS='|' read -r verdict message; do
+      [[ -n "$message" ]] || continue
+      case "$verdict" in
+        PASS) pass "$message" ;;
+        FAIL) fail "$message" ;;
+        WARN) warn "$message" ;;
+        *)    note "$message" ;;
+      esac
+    done <<< "$ROUTING_REPORT"
+  fi
+
+  # Selected mode lives in preserved state; absence just means "never set".
+  MODE_STATE="$HERMES_HOME/state/nicks-stack-mode.json"
+  if [[ -r "$MODE_STATE" ]]; then
+    note "selected mode: $(sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' "$MODE_STATE" | head -1)"
+  else
+    note "selected mode: none recorded yet (falls back to the map's default_mode)"
+  fi
+fi
+
+# ==========================================================================
+section "8. Services"
 # ==========================================================================
 SUPERVISOR_UP=0
 if have supervisorctl && supervisorctl status >/dev/null 2>&1; then
@@ -488,7 +526,7 @@ else
 fi
 
 # ==========================================================================
-section "8. Onboarding state (informational)"
+section "9. Onboarding state (informational)"
 # ==========================================================================
 if [[ -s "$HERMES_HOME/auth.json" ]]; then
   pass "model account connected (auth.json present)"
@@ -508,7 +546,7 @@ else
 fi
 
 # ==========================================================================
-section "9. User data inventory (must survive every update)"
+section "10. User data inventory (must survive every update)"
 # ==========================================================================
 note "vault notes        : $(count_files "$VAULT_DIR") file(s) in $VAULT_DIR"
 note "memories           : $(count_files "$HERMES_HOME/memories") file(s)"

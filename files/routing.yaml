@@ -1,0 +1,164 @@
+# ==========================================================================
+# Nick's Stack — provider routing map  (deployed to /root/.hermes/routing.yaml)
+# ==========================================================================
+# The single inspectable source of truth for "which mode uses which model".
+# Nothing here is inferred at runtime: `nicks-stack-route show` reads this file
+# and reports the mode, provider, model and reason verbatim. There is no
+# automatic or opaque routing in v1 — a mode changes only when someone asks
+# for it.
+#
+# MECHANISM (verified against this repo, not assumed)
+#   Per-call routing uses the Hermes CLI flags that the AgentPhone bridge
+#   already uses in production:
+#       hermes chat -Q --source <src> -m <model> --provider <provider> -q <prompt>
+#   (files/agentphone-bridge/agentphone_bridge.py:1270-1276, and
+#    skills/productivity/agentphone-setup/references/inbound-webhook-bridge.md:144
+#    — which also records that HERMES_INFERENCE_MODEL does NOT work for
+#    `hermes chat`, only for `hermes -z` and `--tui`. Use the flags.)
+#
+#   `smart` is the gateway's own configured model, so it costs nothing extra:
+#   Jack simply answers. Every other model-backed mode is a one-shot
+#   subprocess, which is why switching modes needs no gateway restart and
+#   cannot disturb Telegram, sessions or memory.
+#
+# PROVIDER NAMES are Hermes plugin names, confirmed enabled in
+# files/config.yaml → plugins.enabled: anthropic-provider, openrouter-provider,
+# xai-provider, openai-codex-provider. Providers declared in the `providers:`
+# block of config.yaml are addressed as `custom:<name>` instead.
+#
+# MODEL IDS below are Anthropic API model IDs, used by provider `anthropic`
+# against https://api.anthropic.com (files/config.yaml → model.base_url).
+# Verify them on the machine before trusting them:
+#   nicks-stack-route probe --mode fast
+# ==========================================================================
+version: 1
+
+# The mode used when nobody has selected one. `smart` is the gateway default,
+# so this matches model.default in config.yaml on purpose.
+default_mode: smart
+
+# Selected mode lives under state/, which platform/update.sh treats as
+# preserved user data — a deployment never resets the chosen mode.
+state_file: /root/.hermes/state/nicks-stack-mode.json
+
+modes:
+
+  fast:
+    provider: anthropic
+    model: claude-haiku-4-5
+    key_env: ANTHROPIC_API_KEY
+    execution: hermes-oneshot
+    tools: true
+    fallback: smart
+    summary: Routine email, calendar, summaries, classification, formatting.
+    why: >-
+      Least expensive Anthropic model that still supports the tool-calling loop
+      Hermes needs ($1/$5 per MTok vs $3/$15 for smart). Chosen for volume work
+      where the answer is mechanical rather than judgemental.
+
+  smart:
+    provider: anthropic
+    model: claude-sonnet-5
+    key_env: ANTHROPIC_API_KEY
+    execution: gateway-default
+    tools: true
+    fallback: null
+    summary: Default runtime. Business reasoning, Notion, Gmail, Calendar, Drive, CRM.
+    why: >-
+      Cost-conscious high quality, deliberately not the premium Opus tier. This
+      is the model the gateway itself runs (config.yaml → model.default), so
+      answering in this mode adds no subprocess and no extra latency.
+
+  deep:
+    provider: anthropic
+    model: claude-opus-5
+    key_env: ANTHROPIC_API_KEY
+    execution: hermes-oneshot
+    tools: true
+    fallback: smart
+    requires_confirmation: true
+    summary: Executive strategy, acquisition analysis, complex insurance/tax/legal/financial reasoning.
+    why: >-
+      Premium tier, reserved for work where being wrong is expensive. Never
+      selected automatically: `nicks-stack-route run deep` refuses without
+      --confirm, and no cheaper mode may escalate into it.
+
+  build:
+    execution: specialist-cli
+    specialists:
+      - name: claude-code
+        binary: claude
+        auth_check: claude auth status
+        invoke: claude -p '<task>' --max-turns <N>
+        preferred: true
+      - name: codex
+        binary: codex
+        auth_check: codex login status
+        invoke: codex exec '<task>'
+        preferred: false
+    requires_approval: true
+    fallback: null
+    summary: Software engineering and repository changes.
+    why: >-
+      Claude Code and Codex are locally authenticated CLI execution
+      environments, not API providers — a consumer subscription must never be
+      driven through an API key. Hermes stays the conductor and reviews the
+      diff. See the coding-agent-routing skill for the full policy; this router
+      only reports which specialist is available and never runs one itself.
+
+  local:
+    execution: ollama
+    status: not-configured
+    provider: null
+    model: null
+    fallback: null
+    summary: Placeholder for a future local Ollama route.
+    why: >-
+      Reserved for the Ollama sprint. Nothing is installed, so this mode fails
+      cleanly with "not installed/configured" instead of silently falling back
+      to a paid route.
+
+# --------------------------------------------------------------------------
+# Alternates — providers whose Hermes convention is known but whose route is
+# not yet verified on this machine. They are inert: no mode references them.
+# Each carries the exact command that promotes it to a usable route.
+# --------------------------------------------------------------------------
+alternates:
+
+  openrouter:
+    provider: openrouter
+    key_env: OPENROUTER_API_KEY
+    enabled: false
+    status: provider-verified-model-unverified
+    note: >-
+      The provider is real and already wired: `openrouter` and
+      `openrouter-provider` are in plugins.enabled and OPENROUTER_API_KEY is in
+      the 1Password map. What is NOT verified is which OpenRouter model id to
+      route to — those are vendor/model strings that change over time, so
+      picking one here would be a guess.
+    verify: |
+      # 1. list the ids OpenRouter actually serves right now
+      curl -s https://openrouter.ai/api/v1/models \
+        | python3 -c "import sys,json;[print(m['id']) for m in json.load(sys.stdin)['data']]" | sort
+      # 2. prove the route works end to end (costs a few tokens)
+      hermes chat -Q --provider openrouter -m '<vendor/model-id>' -q 'Reply with exactly: ok'
+      # 3. only then add it to a mode in this file and redeploy
+
+  gemini:
+    provider: null
+    key_env: GEMINI_API_KEY
+    enabled: false
+    status: provider-convention-unverified
+    note: >-
+      GEMINI_API_KEY is stored in 1Password and mapped in config.yaml, but this
+      repository contains no Gemini/Google provider plugin (plugins.enabled has
+      anthropic/openai/openai-codex/openrouter/xai only, plugins.disabled has
+      novita-provider). Configuring it would mean guessing a plugin name, a
+      key_env and a transport. Left unconfigured on purpose.
+    verify: |
+      # Does the installed Hermes ship a Gemini/Google provider at all?
+      hermes plugins list | grep -iE 'gemini|google|vertex'
+      # If it does, register it with the documented custom-provider convention
+      # (same shape as providers.meta-model-api in config.yaml) and probe it
+      # before any mode points at it. If it does not, the supported path is
+      # OpenRouter with a google/* model id — see the openrouter alternate.

@@ -705,8 +705,9 @@ mkdir -p "$STAGE/hermes" "$STAGE/agentphone-bridge" "$STAGE/vault"
 install -D -m 0600 "$FILES_DIR/config.yaml"  "$STAGE/hermes/config.yaml"
 install -D -m 0644 "$FILES_DIR/SOUL.md"      "$STAGE/hermes/SOUL.md"
 install -D -m 0600 "$FILES_DIR/hermes.env"   "$STAGE/hermes/env"
+install -D -m 0644 "$FILES_DIR/routing.yaml" "$STAGE/hermes/routing.yaml"
 install -D -m 0644 "$FILES_DIR/obsidian-registry.json" "$STAGE/obsidian.json"
-ok "staged config.yaml, SOUL.md, env, obsidian.json"
+ok "staged config.yaml, SOUL.md, env, routing.yaml, obsidian.json"
 
 # --- stage: the four Dewey trees ------------------------------------------
 for pair in "plugins:hermes/plugins" "skills:hermes/skills" "scripts:hermes/scripts" "local-packages:hermes/local-packages"; do
@@ -736,6 +737,8 @@ info "placing staged files (our files win over anything the installer wrote)"
 install_managed  "$STAGE/hermes/config.yaml" "$HERMES_HOME/config.yaml" 0600
 install_managed  "$STAGE/hermes/SOUL.md"     "$HERMES_HOME/SOUL.md"     0644
 merge_env_defaults "$STAGE/hermes/env"       "$HERMES_HOME/.env"        0600
+# Provider routing map — declarative, no secrets, read by nicks-stack-route.
+install_managed  "$STAGE/hermes/routing.yaml" "$HERMES_HOME/routing.yaml" 0644
 
 # --- place: the four Dewey trees ------------------------------------------
 sync_tree_managed "$STAGE/hermes/plugins"        "$HERMES_HOME/plugins"        "plugins"
@@ -793,6 +796,19 @@ install_managed "$FILES_DIR/op-enable.py"              "$PREFIX_BIN/nicks-stack-
 install_managed "$FILES_DIR/onboard-launch.sh"         "$PREFIX_BIN/nicks-stack-onboard-launch.sh"          0755
 install_managed "$FILES_DIR/telegram-pair.py"          "$PREFIX_BIN/nicks-stack-telegram-pair.py"           0755
 install_managed "$FILES_DIR/obsidian-launch"           "$PREFIX_BIN/obsidian-launch"                        0755
+
+# Routing CLI: a symlink so the tree copy stays the single source of the code.
+ROUTE_TARGET="$HERMES_HOME/scripts/provider-routing/route.py"
+if [[ -L "$PREFIX_BIN/nicks-stack-route" \
+      && "$(readlink -f "$PREFIX_BIN/nicks-stack-route")" == "$ROUTE_TARGET" ]]; then
+  skip "routing CLI symlink already correct"
+elif [[ -f "$ROUTE_TARGET" ]]; then
+  ln -sf "$ROUTE_TARGET" "$PREFIX_BIN/nicks-stack-route"
+  ok "linked $PREFIX_BIN/nicks-stack-route -> $ROUTE_TARGET"
+  CHANGES=$((CHANGES + 1))
+else
+  warn "routing CLI not found at $ROUTE_TARGET — /mode commands will not work"
+fi
 
 install_managed "$FILES_DIR/Obsidian.desktop"          "$DESKTOP_DIR/Obsidian.desktop"                      0755
 install_managed "$FILES_DIR/NicksStackSetup.desktop"   "$DESKTOP_DIR/NicksStackSetup.desktop"               0755
@@ -966,6 +982,8 @@ health_check "AgentPhone bridge installed"      test -x "$BRIDGE_DIR/agentphone_
 health_check "gateway wrapper installed"        test -x "$PREFIX_BIN/hermes-gateway-run.sh"
 health_check "bridge wrapper installed"         test -x "$PREFIX_BIN/nicks-stack-agentphone-bridge-run.sh"
 health_check "onboarding script installed"      test -x "$PREFIX_BIN/nicks-stack-onboard.sh"
+health_check "routing map installed"            test -s "$HERMES_HOME/routing.yaml"
+health_check "routing CLI installed"            test -x "$PREFIX_BIN/nicks-stack-route"
 health_check "op CLI works"                     bash -c 'op --version >/dev/null 2>&1'
 health_check "cloudflared works"                bash -c 'cloudflared --version >/dev/null 2>&1'
 health_check "Obsidian binary present"          test -x /opt/Obsidian/obsidian

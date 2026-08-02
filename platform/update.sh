@@ -31,7 +31,7 @@
 #   /root/.config/obsidian/obsidian.json  vault registry
 #
 # WHAT IS UPDATED (backed up first, restorable from the rollback point)
-#   config.yaml, SOUL.md, plugins/, skills/, scripts/, local-packages/,
+#   config.yaml, SOUL.md, routing.yaml, plugins/, skills/, scripts/, local-packages/,
 #   /usr/local/bin/* launchers, desktop entries, wallpaper, supervisor conf,
 #   autostart entries.
 #
@@ -60,7 +60,7 @@ readonly BACKUP_ROOT="${STACK_ROOT}/backups"
 # Trees bootstrap.sh owns and replaces — everything else under $HERMES_HOME
 # belongs to the user or the agent and must survive byte-for-byte.
 readonly MANAGED_TREES=(plugins skills scripts local-packages)
-readonly MANAGED_FILES=(config.yaml SOUL.md)
+readonly MANAGED_FILES=(config.yaml SOUL.md routing.yaml)
 
 # Env-style files: bootstrap may APPEND default keys, so these are checked
 # key-by-key (no key may vanish, no existing value may change) rather than by

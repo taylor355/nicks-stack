@@ -426,6 +426,100 @@ spare must stay stopped (`sudo supervisorctl stop hermes-gateway`) until it take
 
 ---
 
+## 6. Provider routing (modes)
+
+Five named modes, one declarative map, no automatic switching. The map is
+`files/routing.yaml` → `/root/.hermes/routing.yaml`; the CLI is
+`nicks-stack-route` (a symlink to
+`/root/.hermes/scripts/provider-routing/route.py`).
+
+| Mode | Provider / model | For |
+|---|---|---|
+| `fast` | `anthropic` / `claude-haiku-4-5` | Routine email, calendar, summaries, classification, formatting |
+| `smart` | `anthropic` / `claude-sonnet-5` — **the gateway's own model** | Default. Business reasoning, Notion, Gmail, Calendar, Drive, CRM |
+| `deep` | `anthropic` / `claude-opus-5` | Executive strategy, acquisitions, complex insurance/tax/legal/financial work |
+| `build` | Claude Code, else Codex (local CLIs) | Repository changes — approval required, never auto-run |
+| `local` | Ollama | Not installed. Fails clean; never falls back to a paid route |
+
+`smart` is what the gateway runs, so answering in smart mode costs nothing
+extra. The other model-backed modes are one-shot subprocesses using the same
+CLI flags the AgentPhone bridge uses in production:
+
+```bash
+hermes chat -Q --source nicks-stack-routing -m <model> --provider <provider> -q "<prompt>"
+```
+
+Changing modes therefore needs **no gateway restart** and cannot disturb
+Telegram, sessions or memory.
+
+### Commands
+
+```bash
+nicks-stack-route show                 # mode, provider, model, why
+nicks-stack-route modes                # every mode + availability
+nicks-stack-route set fast             # select a mode (persisted)
+nicks-stack-route explain deep         # why this route, and its fallback
+nicks-stack-route run fast -q "..."    # one-shot in a route
+nicks-stack-route run deep --confirm -q "..."   # premium needs --confirm
+nicks-stack-route preflight            # can each mode run right now?
+nicks-stack-route probe --mode fast    # 1-token live call (costs a few tokens)
+```
+
+The selected mode is stored in `/root/.hermes/state/nicks-stack-mode.json`,
+which `update.sh` treats as preserved data — a deployment never resets it.
+
+### Telegram syntax
+
+Hermes has no custom slash commands (`/new`, `/reset`, `/status`, `/mcp`,
+`/reasoning`, `/reload` are built in; a plugin cannot add `/mode`). So `/mode …`
+arrives as ordinary message text and the `provider-routing` skill tells Jack to
+act on it:
+
+| Send in Telegram | Jack runs |
+|---|---|
+| `/mode` | `nicks-stack-route show` |
+| `/mode fast` \| `smart` \| `deep` \| `build` \| `local` | `nicks-stack-route set <mode>` |
+| `/modes` | `nicks-stack-route modes` |
+| "which model are you using?" | `nicks-stack-route show` |
+
+### Cost controls
+
+- **deep is never automatic** — `run deep` exits 3 without `--confirm`, and no
+  mode may name a confirmation-required mode as its fallback (`verify.sh` fails
+  the deployment if one does).
+- **build never runs unapproved** — the router reports which specialist is
+  authenticated and prints the command; it never executes a coding agent.
+- **local fails clean** — exits 4 with "not installed/configured"; no paid
+  fallback.
+- **fallback is one hop, downward only** — a failed `fast` retries once on
+  `smart`, and the retry is always announced.
+
+### OpenRouter and Gemini
+
+Neither is wired to a mode, deliberately:
+
+- **OpenRouter** — the provider is verified (`openrouter` and
+  `openrouter-provider` are in `plugins.enabled`, `OPENROUTER_API_KEY` is in the
+  1Password map). The *model id* is not: those are `vendor/model` strings that
+  change. Verify one, then point a mode at it.
+- **Gemini** — `GEMINI_API_KEY` is mapped, but this Hermes ships no
+  Gemini/Google provider plugin, so a plugin name, `key_env` and transport would
+  all be guesses.
+
+The exact promotion commands live in the `alternates` block of
+`files/routing.yaml`. Run them on the machine, then edit `routing.yaml` in the
+repo and redeploy — never hand-edit the deployed copy, which `update.sh`
+replaces.
+
+### Changing the baseline model
+
+The router does not touch `config.yaml`. To change what the *gateway itself*
+runs, edit `files/config.yaml` → `model.default` in the repo, keep
+`routing.yaml`'s `smart` mode in sync (verify.sh cross-checks them and fails if
+they drift), then redeploy and restart.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -438,6 +532,10 @@ spare must stay stopped (`sudo supervisorctl stop hermes-gateway`) until it take
 | `bootstrap.sh`: "another bootstrap is already running" | A stale lock, or a genuine concurrent run | Check with `ps aux \| grep bootstrap.sh`; if none, remove the lock file named in the error |
 | Update reports "preserved data regressed" | Something removed or changed a preserved file during the run | Do not re-run. Read `preserved-after.sha256` vs `preserved-before.sha256` in the rollback point to see exactly which file, then restore it from the backup |
 | Model calls fail with an auth error | Key present but wrong or unfunded | `sudo -i hermes -z "Reply with exactly: ok"` and read the error; check the key in 1Password |
+| `/mode` does nothing in Telegram | The `provider-routing` skill is not deployed, or the CLI symlink is missing | `sudo bash platform/verify.sh` → section 7; redeploy with `platform/update.sh` |
+| `nicks-stack-route run deep` exits 3 | By design — premium routes need explicit consent | Re-run with `--confirm` after the user agrees |
+| `nicks-stack-route run local` exits 4 | By design — Ollama is not installed | Use `fast`/`smart`, or wait for the Ollama sprint |
+| verify.sh: "falls back into premium mode" | A `routing.yaml` edit lets a cheap route escalate into `deep` | Point the fallback at `smart` and redeploy |
 | Obsidian will not launch on the desktop | Sandbox flags | `obsidian-launch` already passes `--no-sandbox --disable-gpu`; check `DISPLAY` is `:99` |
 
 Logs worth reading, in order:
@@ -470,6 +568,11 @@ sudo bash platform/update.sh --op-write-test --check-only
 # Rollback
 ls -1t /opt/nicks-stack/backups/
 # then Option A (restore files) or Option B (git checkout + update.sh) above
+
+# Routing
+nicks-stack-route show
+nicks-stack-route set fast
+nicks-stack-route run deep --confirm -q "..."
 
 # Second agent (machine B)
 sudo bash platform/bootstrap.sh

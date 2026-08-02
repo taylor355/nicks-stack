@@ -1,4 +1,8 @@
-# Default model: Anthropic claude-opus-5. ANTHROPIC_API_KEY is resolved from
+# Default model: Anthropic claude-sonnet-5 — the "smart" mode of the provider
+# routing layer (/root/.hermes/routing.yaml, skills/provider-routing). Sonnet is
+# the sustainable everyday default; claude-opus-5 stays available as the "deep"
+# route and is reached explicitly via `nicks-stack-route run deep --confirm`,
+# never automatically. ANTHROPIC_API_KEY is resolved from
 # 1Password at every hermes start (secrets.onepassword map below), so no key is
 # baked here — the same key contract as every other integration in this stack.
 #
@@ -11,7 +15,7 @@
 # OpenRouter stays available as a future optional provider (OPENROUTER_API_KEY
 # is already in the 1Password map) — set provider: openrouter to route through it.
 model:
-  default: claude-opus-5
+  default: claude-sonnet-5
   provider: anthropic
   base_url: https://api.anthropic.com
 providers:
@@ -164,6 +168,7 @@ secrets:
     enabled: false
     env:
       ANTHROPIC_API_KEY: op://Hermes/Hermes Agent Secrets/ANTHROPIC_API_KEY
+      GEMINI_API_KEY: op://Hermes/Hermes Agent Secrets/GEMINI_API_KEY
       LATITUDE_API_KEY: op://Hermes/Hermes Agent Secrets/LATITUDE_API_KEY
       ORGO_API_KEY: op://Hermes/Hermes Agent Secrets/ORGO_API_KEY
       TELEGRAM_BOT_TOKEN: op://Hermes/Hermes Agent Secrets/TELEGRAM_BOT_TOKEN
