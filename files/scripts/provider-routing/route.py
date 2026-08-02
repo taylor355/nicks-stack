@@ -184,12 +184,19 @@ def specialist_status(spec: dict) -> dict:
 
 def mode_availability(cfg: dict, name: str) -> dict:
     mode = get_mode(cfg, name)
+    if mode.get("tier") and "anthropic" in (mode.get("provider") or ""):
+        resolved, how = platform_lib.resolve_model(mode)
+        if resolved:
+            mode = dict(mode)
+            mode["model"] = resolved
+            mode["_resolution"] = how
     execution = mode.get("execution")
     info = {
         "mode": name,
         "execution": execution,
         "provider": mode.get("provider"),
         "model": mode.get("model"),
+        "resolution": mode.get("_resolution", "pinned"),
         "summary": (mode.get("summary") or "").strip(),
         "why": " ".join((mode.get("why") or "").split()),
         "available": False,
@@ -339,9 +346,21 @@ def cmd_explain(cfg: dict, args) -> int:
     return E_OK
 
 
+def resolve_mode_model(mode: dict) -> tuple[dict, str]:
+    """Apply tier -> live model id for Anthropic routes, from the 24h cache so
+    the router stays fast and works offline.  (v1.0.1 bug 6)"""
+    if not mode.get("tier") or "anthropic" not in (mode.get("provider") or ""):
+        return mode, "pinned"
+    model, how = platform_lib.resolve_model(mode)
+    if model:
+        mode = dict(mode)
+        mode["model"] = model
+    return mode, how
+
+
 def cmd_run(cfg: dict, args) -> int:
     name = args.mode or current_mode(cfg)
-    mode = get_mode(cfg, name)
+    mode, _how = resolve_mode_model(get_mode(cfg, name))
     info = mode_availability(cfg, name)
     execution = mode.get("execution")
 

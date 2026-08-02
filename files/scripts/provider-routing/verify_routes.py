@@ -135,6 +135,8 @@ def main() -> int:
             continue
         provider = spec.get("provider") or ""
         key = spec.get("key_env")
+        optional = not spec.get("required", True)
+        suffix = " [optional]" if optional else ""
 
         if provider.startswith("custom:"):
             bare = provider.split(":", 1)[1]
@@ -143,15 +145,19 @@ def main() -> int:
             else:
                 print(
                     f"FAIL|provider '{pname}' uses {provider} but config.yaml has no "
-                    f"providers.{bare} entry"
+                    f"providers.{bare} entry{suffix}"
                 )
         elif provider in plugins or f"{provider}-provider" in plugins:
             print(f"PASS|provider '{pname}' -> {provider} (plugin enabled)")
         elif provider:
-            print(f"FAIL|provider '{pname}' names '{provider}', which is not enabled anywhere")
+            print(f"FAIL|provider '{pname}' names '{provider}', which is not enabled anywhere{suffix}")
         else:
             print(f"FAIL|provider '{pname}' has no provider name")
 
+        if optional:
+            fb = spec.get("fallback_provider")
+            print(f"INFO|provider '{pname}': optional — failure does not block validation"
+                  + (f" (models available via {fb})" if fb else ""))
         if key:
             if key in op_env:
                 print(f"PASS|provider '{pname}': {key} is in the 1Password map")

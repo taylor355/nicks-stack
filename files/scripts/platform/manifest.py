@@ -44,6 +44,7 @@ def build(repo: str | None = None) -> dict:
             "init_system": state["platform"]["init_system"],
         },
         "git": state["git"],
+        "repo_path": (state["git"] or {}).get("repo_path", ""),
         "versions": state["versions"],
         "providers": {
             "enabled": sorted(n for n, p in providers.items() if p["enabled"]),

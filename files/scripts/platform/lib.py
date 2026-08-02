@@ -275,6 +275,133 @@ def ollama_pick_model(spec: dict | None = None, detected: dict | None = None) ->
 
 
 # --------------------------------------------------------------------------
+# Anthropic model resolution  (v1.0.1 bug 6)
+# --------------------------------------------------------------------------
+# Model aliases go stale. Rather than pinning ids in routing.yaml, each
+# Anthropic-backed mode declares a TIER (haiku / sonnet / opus) and the current
+# id is resolved from the vendor's own catalog, newest first. The pinned
+# `model:` value stays as the offline fallback.
+ANTHROPIC_TIERS = ("haiku", "sonnet", "opus")
+ANTHROPIC_CACHE = HERMES_HOME / "state" / "anthropic-models.json"
+ANTHROPIC_CACHE_TTL = 86400  # seconds
+
+
+def anthropic_catalog(key: str, timeout: int = 30) -> tuple[list[dict], str]:
+    status, body, err = http_json(
+        "https://api.anthropic.com/v1/models?limit=100",
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+        timeout=timeout,
+    )
+    if status != 200:
+        return [], f"HTTP {status} {scrub(err)[:120]}"
+    return (body or {}).get("data") or [], ""
+
+
+def _tier_of(model_id: str) -> str:
+    lowered = (model_id or "").lower()
+    for tier in ANTHROPIC_TIERS:
+        if tier in lowered:
+            return tier
+    return ""
+
+
+def anthropic_resolve_tiers(key: str | None = None, timeout: int = 30,
+                            refresh: bool = False) -> dict:
+    """{'haiku': id, 'sonnet': id, 'opus': id, 'source': ..., 'error': ...}
+
+    Cached for 24h under state/ so the routing CLI stays fast and offline-safe.
+    """
+    now = int(__import__("time").time())
+    if not refresh and ANTHROPIC_CACHE.is_file():
+        try:
+            cached = json.loads(ANTHROPIC_CACHE.read_text())
+            if now - int(cached.get("fetched_at", 0)) < ANTHROPIC_CACHE_TTL:
+                cached["source"] = "cache"
+                return cached
+        except (OSError, ValueError):
+            pass
+
+    if key is None:
+        key, _ = resolve_key_value("ANTHROPIC_API_KEY")
+    if not key:
+        return {"source": "unresolved", "error": "ANTHROPIC_API_KEY not resolvable"}
+
+    models, err = anthropic_catalog(key, timeout)
+    if err:
+        return {"source": "error", "error": err}
+
+    # Newest first. The catalog is ordered newest-first already; created_at is
+    # used when present so the choice is deterministic either way.
+    ordered = sorted(models, key=lambda m: str(m.get("created_at") or ""), reverse=True)
+    resolved: dict = {"fetched_at": now, "source": "live", "error": ""}
+    for entry in ordered:
+        mid = entry.get("id") or ""
+        if "fast" in mid.lower():      # speed variants are not distinct models here
+            continue
+        tier = _tier_of(mid)
+        if tier and tier not in resolved:
+            resolved[tier] = mid
+    resolved["available"] = [m.get("id") for m in ordered if m.get("id")]
+    try:
+        ANTHROPIC_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        ANTHROPIC_CACHE.write_text(json.dumps(resolved, indent=2) + "\n")
+    except OSError:
+        pass
+    return resolved
+
+
+def resolve_model(spec: dict, tiers: dict | None = None) -> tuple[str, str]:
+    """(model_id, how). Honours an explicit tier for Anthropic routes and falls
+    back to the pinned id when the catalog is unavailable."""
+    pinned = spec.get("model") or ""
+    tier = spec.get("tier") or ""
+    provider = spec.get("provider") or ""
+    if not tier or "anthropic" not in provider:
+        return pinned, "pinned"
+    tiers = tiers if tiers is not None else anthropic_resolve_tiers()
+    live = tiers.get(tier)
+    if live:
+        return live, f"resolved live ({tier})"
+    if pinned:
+        return pinned, f"pinned fallback ({tiers.get('error') or 'catalog unavailable'})"
+    return "", f"unresolved ({tiers.get('error') or 'no catalog'})"
+
+
+# --------------------------------------------------------------------------
+# Failure classification  (v1.0.1 bug 7)
+# --------------------------------------------------------------------------
+def classify_failure(text: str, status: int | None = None) -> tuple[str, str]:
+    """(category, suggested action) for a provider failure. Categories:
+    credential | network | model-id | hermes-config | provider-error."""
+    blob = (text or "").lower()
+    if status in (401, 403) or any(w in blob for w in
+                                   ("unauthorized", "invalid api key", "authentication",
+                                    "permission", "not found. user", "user not found",
+                                    "unresolved", "not resolvable", "map (disabled)",
+                                    "no key", "missing key", "credential")):
+        return ("credential",
+                "key is missing, wrong or lacks access — check the 1Password field and `op read`")
+    if status in (404,) or any(w in blob for w in
+                               ("model not found", "unknown model", "does not exist",
+                                "invalid model", "no such model")):
+        return ("model-id",
+                "the model id is stale — run `nicks-stack-provider-doctor --refresh-models`")
+    if status == 0 or any(w in blob for w in
+                          ("connection refused", "timed out", "timeout", "temporary failure",
+                           "name resolution", "unreachable", "ssl", "certificate")):
+        return ("network", "the endpoint was unreachable — check egress/DNS/proxy from this VM")
+    if any(w in blob for w in ("unknown provider", "provider not", "no such provider",
+                               "custom:", "not configured", "unsupported provider")):
+        return ("hermes-config",
+                "Hermes does not accept this provider — check config.yaml providers/plugins")
+    if status in (429,):
+        return ("provider-error", "rate limited — retry later")
+    if status and status >= 500:
+        return ("provider-error", "vendor-side error — retry later")
+    return ("provider-error", "see the message above")
+
+
+# --------------------------------------------------------------------------
 # Providers / integrations / identity
 # --------------------------------------------------------------------------
 def providers_detect() -> dict:
@@ -384,10 +511,77 @@ def versions_detect() -> dict:
     return versions
 
 
+# Candidate checkout locations, in priority order. A deployment may live in
+# any of these; nothing may assume one.  (v1.0.1 bug 2)
+REPO_CANDIDATES = (
+    "/opt/nicks-stack",
+    "/root/nicks-stack",
+    str(Path.home() / "nicks-stack"),
+    "/home/user/nicks-stack",
+)
+
+
+def find_repo_root(start: Path | str | None = None) -> Path | None:
+    """Locate the nicks-stack git checkout without assuming a path.
+
+    Order: explicit argument -> $NICKS_STACK_REPO -> the path recorded in the
+    manifest -> the known candidates -> walking up from this file. Returns the
+    git top-level, or None when no checkout can be found.  (v1.0.1 bugs 1+2)
+    """
+    def toplevel(path: Path | str) -> Path | None:
+        path = Path(path)
+        if not path.is_dir() or not have("git"):
+            return None
+        try:
+            proc = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                                  capture_output=True, text=True, timeout=10, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        root = Path(proc.stdout.strip())
+        return root if root.is_dir() else None
+
+    tried: list[Path | str] = []
+    if start:
+        tried.append(start)
+    env_repo = os.environ.get("NICKS_STACK_REPO", "").strip()
+    if env_repo:
+        tried.append(env_repo)
+    # A previous deploy records where it ran from.
+    try:
+        stored = json.loads(MANIFEST_FILE.read_text()).get("repo_path")
+        if stored:
+            tried.append(stored)
+    except (OSError, ValueError, AttributeError):
+        pass
+    tried.extend(REPO_CANDIDATES)
+    # Finally: walk up from this file (works when running out of the checkout).
+    tried.append(Path(__file__).resolve().parent)
+
+    for candidate in tried:
+        root = toplevel(candidate)
+        if root and (root / "platform" / "bootstrap.sh").is_file():
+            return root
+    # Accept any git root as a last resort, even without the platform dir.
+    for candidate in tried:
+        root = toplevel(candidate)
+        if root:
+            return root
+    return None
+
+
 def git_commit(repo: Path | str | None = None) -> dict:
-    repo = Path(repo or os.environ.get("NICKS_STACK_REPO", ".")).resolve()
+    """Branch/commit for the deployment checkout. Discovers the repo rather
+    than assuming the caller's cwd is it.  (v1.0.1 bug 1)"""
+    unknown = {"commit": "unknown", "short": "unknown", "branch": "unknown",
+               "dirty": False, "repo_path": "", "detail": ""}
     if not have("git"):
-        return {"commit": "unknown", "branch": "unknown", "dirty": False}
+        return {**unknown, "detail": "git not installed"}
+    root = find_repo_root(repo)
+    if root is None:
+        return {**unknown, "detail": "no nicks-stack checkout found"}
+    repo = root
     def run(args):
         try:
             proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
@@ -400,6 +594,8 @@ def git_commit(repo: Path | str | None = None) -> dict:
         "short": run(["rev-parse", "--short", "HEAD"]) or "unknown",
         "branch": run(["rev-parse", "--abbrev-ref", "HEAD"]) or "unknown",
         "dirty": bool(run(["status", "--porcelain"])),
+        "repo_path": str(repo),
+        "detail": "",
     }
 
 

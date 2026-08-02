@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.1"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -484,7 +484,11 @@ if [[ -r "$ROUTING_FILE" ]]; then
       [[ -n "$message" ]] || continue
       case "$verdict" in
         PASS) pass "$message" ;;
-        FAIL) fail "$message" ;;
+        # Optional providers (native Gemini) are reported, never blocking.
+        FAIL) case "$message" in
+                *"optional"*) warn "$message" ;;
+                *)            fail "$message" ;;
+              esac ;;
         WARN) warn "$message" ;;
         *)    note "$message" ;;
       esac

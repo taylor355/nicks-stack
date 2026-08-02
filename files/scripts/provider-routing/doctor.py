@@ -64,7 +64,7 @@ HERMES_ENV = Path(os.environ.get("NICKS_STACK_ENV", "/root/.hermes/.env"))
 OP_ENV = Path(os.environ.get("NICKS_STACK_OP_ENV", "/root/.hermes/.op.env"))
 
 PROBE_PROMPT = "Reply with exactly: ok"
-DEFAULT_TIMEOUT = 90
+DEFAULT_TIMEOUT = 30   # per-check ceiling (v1.0.1 bug 4)
 
 # Anything that looks like a credential is scrubbed before anything is printed.
 SECRET_PATTERNS = [
@@ -152,6 +152,31 @@ def hermes_infer(provider: str, model: str, timeout: int) -> tuple[bool, str]:
     return False, short(proc.stderr or proc.stdout or f"exit {proc.returncode}")
 
 
+def guarded(fn, res: "Result", timeout: int):
+    """Run one provider check under a hard wall-clock guard so a hung provider
+    can never stall the rest of the run.  (v1.0.1 bug 4)"""
+    import threading
+    box: dict = {}
+
+    def work():
+        try:
+            box["result"] = fn()
+        except Exception as exc:  # noqa: BLE001 - a check must never kill the run
+            box["error"] = exc
+
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    thread.join(timeout + 5)
+    if thread.is_alive():
+        res.step("completed within timeout", False,
+                 f"provider check exceeded {timeout + 5}s — moving on")
+        return res
+    if "error" in box:
+        res.step("completed", False, f"check raised: {box['error']}")
+        return res
+    return box.get("result", res)
+
+
 # --------------------------------------------------------------------------
 # Per-provider checks
 # --------------------------------------------------------------------------
@@ -167,9 +192,18 @@ class Result:
         self.skipped = False
         self.service_state = ""    # supervisor program state, when managed
         self.serving = False
+        self.required = True       # optional providers never fail the run
+        self.fallback_note = ""
+        self.resolved_tiers: dict = {}
 
-    def step(self, label: str, ok: bool, detail: str = "") -> bool:
-        self.steps.append({"step": label, "ok": ok, "detail": short(detail)})
+    def step(self, label: str, ok: bool, detail: str = "",
+             status: int | None = None) -> bool:
+        entry = {"step": label, "ok": ok, "detail": short(detail)}
+        if not ok:
+            category, action = platform_lib.classify_failure(detail, status)
+            entry["cause"] = category
+            entry["action"] = action
+        self.steps.append(entry)
         return ok
 
     @property
@@ -185,6 +219,8 @@ class Result:
             "models_discovered": len(self.models),
             "inference_via": self.inference_via,
             "reply": self.reply,
+            "required": self.required,
+            "fallback_note": self.fallback_note,
             "service_state": self.service_state,
             "serving": self.serving,
             "models": self.models,
@@ -198,25 +234,31 @@ def check_anthropic(spec: dict, args) -> Result:
     if not res.step("credential", key is not None, f"source: {source}"):
         return res
 
-    status, body, err = http_json(
-        "https://api.anthropic.com/v1/models",
-        headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-        timeout=args.timeout,
-    )
-    if not res.step("catalog reachable", status == 200, f"HTTP {status} {short(err, 90)}"):
+    models, cat_err = platform_lib.anthropic_catalog(key, args.timeout)
+    if not res.step("catalog reachable", not cat_err, cat_err or "GET /v1/models 200"):
         return res
-    res.models = [m.get("id", "") for m in (body or {}).get("data", [])]
+    res.models = [m.get("id", "") for m in models]
 
-    wanted = spec.get("models") or []
-    missing = [m for m in wanted if m not in res.models]
-    res.checked_model = wanted[0] if wanted else ""
-    if not res.step(
-        "model ids verified",
-        not missing,
-        f"{len(wanted)} checked against {len(res.models)} live ids"
-        + (f"; missing: {', '.join(missing)}" if missing else ""),
-    ):
+    # Tiers, not pins: resolve the CURRENT id for each tier the routing map
+    # asks for. A stale pin can no longer break a route.  (v1.0.1 bug 6)
+    tiers = platform_lib.anthropic_resolve_tiers(key, args.timeout, refresh=args.refresh_models)
+    wanted_tiers = spec.get("tiers") or list(platform_lib.ANTHROPIC_TIERS)
+    resolved = {t: tiers.get(t) for t in wanted_tiers}
+    unresolved = [t for t, v in resolved.items() if not v]
+    detail = ", ".join(f"{t}={v or 'UNRESOLVED'}" for t, v in resolved.items())
+    if not res.step("model tiers resolved", not unresolved,
+                    f"{detail} (from {len(res.models)} live ids)"):
         return res
+    res.resolved_tiers = resolved
+    res.checked_model = resolved.get("haiku") or next(iter(v for v in resolved.values() if v), "")
+
+    # Report drift so a stale pin in routing.yaml is visible, without failing.
+    pinned = [m for m in (spec.get("models") or []) if m not in res.models]
+    if pinned:
+        res.fallback_note = (
+            f"routing.yaml pins ids that no longer exist: {', '.join(pinned)} "
+            f"(harmless — tiers resolve live)"
+        )
 
     if args.no_inference:
         res.step("inference", True, "skipped (--no-inference)")
@@ -496,7 +538,10 @@ def main() -> int:
     ap.add_argument("--no-inference", action="store_true",
                     help="credential + catalog only — makes no billable call")
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                    help="per-check ceiling in seconds (default 30)")
+    ap.add_argument("--refresh-models", action="store_true",
+                    help="re-query the Anthropic catalog instead of the 24h cache")
     args = ap.parse_args()
 
     routing = load_yaml(ROUTING_FILE)
@@ -528,13 +573,24 @@ def main() -> int:
             res.steps = []
             res.step("enabled", True, "declared but disabled in routing.yaml")
         else:
-            res = checker(spec, args)
+            # Each provider runs under a wall-clock guard so one hung endpoint
+            # cannot stall the rest of the validation.  (v1.0.1 bug 4)
+            res = guarded(lambda sp=spec: checker(sp, args), res, args.timeout)
             res.display = spec.get("display") or res.display
+            res.required = bool(spec.get("required", True))
+            if not res.required and not res.passed:
+                fb = spec.get("fallback_provider")
+                res.fallback_note = res.fallback_note or (
+                    f"optional provider — models remain available via {fb}" if fb
+                    else "optional provider — does not block platform validation")
         results.append(res)
 
     state = routing_state(routing)
     available = [r.display for r in results if r.passed and not r.skipped]
-    unavailable = [r.display for r in results if not r.passed and not r.skipped]
+    unavailable = [r.display for r in results
+                   if not r.passed and not r.skipped and r.required]
+    optional_failed = [r.display for r in results
+                       if not r.passed and not r.skipped and not r.required]
     ollama_models = next((r.models for r in results if r.name == "ollama"), [])
 
     if args.json:
@@ -542,6 +598,7 @@ def main() -> int:
             "routing": state,
             "available_providers": available,
             "unavailable_providers": unavailable,
+            "optional_failed": optional_failed,
             "ollama_models": ollama_models,
             "providers": [r.as_dict() for r in results],
         }, indent=2))
@@ -550,15 +607,29 @@ def main() -> int:
     for res in results:
         print("Provider:")
         print(res.display)
-        print("SKIP" if res.skipped else ("PASS" if res.passed else "FAIL"))
+        if res.skipped:
+            print("SKIP")
+        elif res.passed:
+            print("PASS")
+        elif not res.required:
+            print("FAIL (optional — does not block platform validation)")
+        else:
+            print("FAIL")
         for st in res.steps:
             mark = "✓" if st["ok"] else "✗"
             detail = f" — {st['detail']}" if st["detail"] else ""
             print(f"  {mark} {st['step']}{detail}")
+            if not st["ok"] and st.get("cause"):
+                print(f"      cause : {st['cause']}")
+                print(f"      fix   : {st['action']}")
         if res.checked_model:
             print(f"  model: {res.checked_model}")
         if res.inference_via:
             print(f"  via  : {res.inference_via}")
+        if res.resolved_tiers:
+            print("  tiers: " + ", ".join(f"{t}={m}" for t, m in res.resolved_tiers.items() if m))
+        if res.fallback_note:
+            print(f"  note : {res.fallback_note}")
         if res.reply:
             print(f"  reply: {res.reply}")
 
@@ -589,8 +660,11 @@ def main() -> int:
     print("Current model        : " + str(state["model"]))
     print("Available providers  : " + (", ".join(available) or "none"))
     print("Unavailable providers: " + (", ".join(unavailable) or "none"))
+    if optional_failed:
+        print("Optional (non-blocking): " + ", ".join(optional_failed))
     print("Installed Ollama models: " + (", ".join(ollama_models) or "none"))
 
+    # Optional providers (native Gemini) never fail the run.  (v1.0.1 bug 5)
     return 0 if not unavailable else 1
 
 

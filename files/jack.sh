@@ -88,13 +88,16 @@ PY
     exec "$ROUTE" "${@:-show}"
     ;;
   verify)
-    if [[ -x /root/nicks-stack/platform/verify.sh ]]; then
-      exec bash /root/nicks-stack/platform/verify.sh "$@"
-    elif [[ -x "$HOME/nicks-stack/platform/verify.sh" ]]; then
-      exec bash "$HOME/nicks-stack/platform/verify.sh" "$@"
-    else
-      die "verify.sh not found — run it from your nicks-stack checkout"
+    # Discover the checkout instead of assuming a path.  (v1.0.1 bug 2)
+    REPO="$(python3 -c "
+import sys; sys.path.insert(0, '$PLATFORM_SCRIPTS')
+import lib
+root = lib.find_repo_root()
+print(root or '')" 2>/dev/null)"
+    if [[ -n "$REPO" && -f "$REPO/platform/verify.sh" ]]; then
+      exec bash "$REPO/platform/verify.sh" "$@"
     fi
+    die "no nicks-stack checkout found (looked in /opt/nicks-stack, /root/nicks-stack, \$HOME/nicks-stack, \$NICKS_STACK_REPO)"
     ;;
   help|--help|-h)
     usage

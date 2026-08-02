@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.0.0 — frozen.** From here the work is agent identity and company
+**Platform v1.0.1 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,26 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.0.1 — validation bug fixes (no behaviour redesign)
+
+Found during real validation on the Orgo VM and fixed:
+
+| # | Bug | Fix |
+|---|---|---|
+| 1 | `jack doctor` reported `unknown on unknown` for git | repo is discovered, then branch/commit read from it |
+| 2 | Hardcoded repo paths | `/opt/nicks-stack`, `/root/nicks-stack`, `$HOME/nicks-stack`, `$NICKS_STACK_REPO`, the manifest's recorded path, or the git root |
+| 3 | Manual `ollama serve` fought the supervised service | bootstrap stops it (TERM, then KILL) before Supervisor takes the port |
+| 4 | provider-doctor could hang | 30s per-check ceiling + a wall-clock guard; a hung provider no longer stalls the rest |
+| 5 | Native Gemini failure blocked validation | Gemini is `required: false`; reported separately, exit code unaffected, models still reachable via OpenRouter |
+| 6 | Stale Anthropic aliases (`claude-haiku-4-5`) | modes declare a **tier** (haiku/sonnet/opus); the id resolves live from `GET /v1/models`, cached 24h, pinned id is the offline fallback |
+| 7 | Opaque failures | every failure carries `cause` (credential / network / model-id / hermes-config / provider-error) and a `fix` line |
+
+Refresh the Anthropic catalog on demand:
+
+```bash
+sudo nicks-stack-provider-doctor --refresh-models
+```
 
 ## The one command to know
 

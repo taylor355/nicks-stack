@@ -16,10 +16,14 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.0.0
+version: 1.0.1
 released: 2026-08-02
 status: frozen
 description: >-
+  v1.0.1 fixes only the implementation bugs found during real validation on the
+  Orgo VM: git/repo discovery, Ollama takeover, provider-doctor timeouts,
+  optional native Gemini, dynamic Anthropic model resolution and failure
+  diagnostics. No architecture changed.
   Deployment platform for Hermes-based company agents: bootstrap, update and
   verify tooling, an explicit provider-routing layer (Anthropic, OpenRouter,
   Gemini, Ollama), supervised services, and a 1Password secret plane. Frozen at
@@ -28,13 +32,13 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.0.0
-  bootstrap: 1.0.0
+  platform: 1.0.1
+  bootstrap: 1.0.1
   update: 1.0.0
-  verify: 1.0.0
-  routing: 1.0.0
-  doctor: 1.0.0
-  manifest: 1.0.0
+  verify: 1.0.1
+  routing: 1.0.1
+  doctor: 1.0.1
+  manifest: 1.0.1
 
 # Services this platform supervises. Supervisor is the init for services on
 # this platform — not systemd. `optional` services may be absent on a machine

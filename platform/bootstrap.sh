@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.1"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -1022,6 +1022,39 @@ stderr_logfile=/root/.hermes_agentphone_bridge/supervisor.err.log
 stdout_logfile_maxbytes=10MB
 stderr_logfile_maxbytes=10MB
 SUPERVISORCONF
+
+  # Take ownership of any hand-started server before Supervisor claims the
+  # port. A manual `ollama serve` and the supervised one fight over :11434 and
+  # the supervised one loses silently.  (v1.0.1 bug 3)
+  if ((WITH_OLLAMA)) || have ollama; then
+    MANUAL_OLLAMA="$(pgrep -f "ollama serve" 2>/dev/null | tr '\n' ' ' || true)"
+    if [[ -n "${MANUAL_OLLAMA// /}" ]]; then
+      SUPERVISED_OLLAMA=0
+      if have supervisorctl && supervisorctl status ollama 2>/dev/null | grep -q RUNNING; then
+        SUPERVISED_OLLAMA=1
+      fi
+      if ((SUPERVISED_OLLAMA)); then
+        skip "ollama already running under Supervisor — leaving it alone"
+      else
+        info "stopping hand-started 'ollama serve' (pids:${MANUAL_OLLAMA}) so Supervisor can own it"
+        pkill -TERM -f "ollama serve" 2>/dev/null || true
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          pgrep -f "ollama serve" >/dev/null 2>&1 || break
+          sleep 1
+        done
+        if pgrep -f "ollama serve" >/dev/null 2>&1; then
+          pkill -KILL -f "ollama serve" 2>/dev/null || true
+          sleep 1
+        fi
+        if pgrep -f "ollama serve" >/dev/null 2>&1; then
+          warn "could not stop the manual ollama process — the supervised service may fail to bind :11434"
+        else
+          ok "manual Ollama stopped; Supervisor will start it"
+          CHANGES=$((CHANGES + 1))
+        fi
+      fi
+    fi
+  fi
 
   # Ollama is a managed platform service like the other two, but only when it
   # is wanted: writing a program for a machine that will never run local AI
