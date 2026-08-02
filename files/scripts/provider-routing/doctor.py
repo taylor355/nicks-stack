@@ -12,6 +12,7 @@
 #   nicks-stack-provider-doctor                 # verify every provider
 #   nicks-stack-provider-doctor --provider gemini
 #   nicks-stack-provider-doctor --no-inference  # config + catalog only, no spend
+#   nicks-stack-provider-doctor --via hermes    # also exercise the Hermes runtime
 #   nicks-stack-provider-doctor --runtime       # runtime parity + profiles, no spend
 #   nicks-stack-provider-doctor --json
 #
@@ -24,9 +25,9 @@
 #                     wants? (this is what "verify the configured model IDs"
 #                     means: the id is checked against the vendor's own list,
 #                     never assumed)
-#   3. inference    — one real, minimal completion. Through the Hermes CLI
-#                     when it is available, so the runtime path itself is
-#                     exercised; otherwise straight to the vendor API.
+#   3. inference    — one real, minimal completion, capped at
+#                     validation.max_tokens (routing.yaml, default 16). See
+#                     v1.0.4 below for why the vendor API is the default leg.
 #
 # v1.0.2 — RUNTIME PARITY. The Hermes leg now runs with the same runtime
 # initialisation the supervised gateway gets (lib.hermes_child_env() +
@@ -40,6 +41,15 @@
 # tooling and only the credentials routing names, so a probe stops paying for a
 # runtime it never uses. If that profile is unusable the call falls back to the
 # full runtime and says so — a profile can never make validation fail.
+#
+# v1.0.4 — CHEAP BY DEFAULT. The inference step now goes to the vendor API with
+# an explicit output cap, because OpenRouter prices a request by its MAXIMUM
+# possible cost: an uncapped probe advertising the model's full completion
+# budget returns HTTP 402 on an account that can easily afford the four tokens
+# it actually uses. There is no verified way to cap `hermes chat` (no
+# --max-tokens flag is documented, and providers.<name>.max_output_tokens is
+# recorded in-repo as an unrecognised key), so the Hermes runtime leg is now
+# opt-in via --via hermes|both. Normal routing is untouched.
 #
 # SECRET SAFETY: key values are held in memory only. They are never printed,
 # never logged, and every vendor error string is scrubbed before display.
@@ -178,6 +188,55 @@ def hermes_infer(provider: str, model: str, timeout: int,
     return res["ok"], detail
 
 
+def probe_budget(args) -> int:
+    """The output cap every vendor probe must carry. A credential check has no
+    business asking for the model's full completion budget: OpenRouter prices a
+    request by its MAXIMUM possible cost, so an uncapped probe returns HTTP 402
+    on an account that can easily afford the four tokens it actually uses."""
+    if getattr(args, "max_tokens", None):
+        return max(8, min(int(args.max_tokens), 64))
+    return platform_lib.validation_spec()["max_tokens"]
+
+
+def inference_mode(args) -> str:
+    """api | hermes | both — the validation cost policy (routing.yaml)."""
+    return getattr(args, "via", None) or platform_lib.validation_spec()["inference"]
+
+
+def run_inference(res: "Result", args, *, provider: str, model: str,
+                  key_env: str | None, api, api_label: str) -> "Result":
+    """Apply the validation cost policy to one provider's inference step.
+
+    `api` is a callable returning (ok, detail) for a capped vendor call. The
+    Hermes leg exercises the real runtime but cannot be cost-bounded — no
+    --max-tokens flag is documented for `hermes chat`, and
+    providers.<name>.max_output_tokens is recorded in-repo as an unrecognised
+    key — so it is opt-in and, when both legs run, reported separately so a
+    runtime problem is never mistaken for a credential problem."""
+    mode = inference_mode(args)
+    use_hermes = mode in ("hermes", "both") and hermes_available()
+    use_api = mode in ("api", "both") or not use_hermes
+
+    if use_api:
+        ok, detail = api()
+        res.inference_via = api_label
+        res.reply = short(detail, 80) if ok else ""
+        if not res.step("inference", ok, f"{detail}  (max_tokens={probe_budget(args)})"):
+            return res
+
+    if use_hermes:
+        h_ok, h_detail = hermes_infer(provider, model, args.timeout, key_env)
+        if use_api:
+            res.step("hermes runtime leg", h_ok,
+                     h_detail if h_ok else f"{h_detail}  [credential and model already "
+                                           f"proved good by the capped API call]")
+        else:
+            res.inference_via = f"hermes chat --provider {provider}"
+            res.reply = short(h_detail, 80) if h_ok else ""
+            res.step("inference", h_ok, h_detail)
+    return res
+
+
 def runtime_hint(key_env: str | None = None) -> str:
     """The most likely reason a cold `hermes chat` stalled, in one line."""
     findings = platform_lib.hermes_runtime_diagnose(key_env)
@@ -297,26 +356,16 @@ def check_anthropic(spec: dict, args) -> Result:
         return res
 
     model = res.checked_model or (res.models[0] if res.models else "")
-    if hermes_available():
-        ok, detail = hermes_infer("anthropic", model, args.timeout, spec.get("key_env"))
-        res.inference_via = "hermes chat --provider anthropic"
-    else:
-        status, body, err = http_json(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-            payload={"model": model, "max_tokens": 16,
-                     "messages": [{"role": "user", "content": PROBE_PROMPT}]},
-            timeout=args.timeout,
-        )
-        ok = status == 200
-        detail = (
-            "".join(b.get("text", "") for b in (body or {}).get("content", []))
-            if ok else f"HTTP {status} {short(err, 90)}"
-        )
-        res.inference_via = "POST https://api.anthropic.com/v1/messages"
-    res.reply = short(detail, 80) if ok else ""
-    res.step("inference", ok, detail)
-    return res
+
+    def api():
+        ok, detail, _ = platform_lib.api_probe(
+            "anthropic", model=model, key=key, max_tokens=probe_budget(args),
+            timeout=args.timeout)
+        return ok, detail
+
+    return run_inference(res, args, provider="anthropic", model=model,
+                         key_env=spec.get("key_env"), api=api,
+                         api_label="POST https://api.anthropic.com/v1/messages")
 
 
 def check_openrouter(spec: dict, args) -> Result:
@@ -347,27 +396,19 @@ def check_openrouter(spec: dict, args) -> Result:
         res.step("inference", True, "skipped (--no-inference)")
         return res
 
-    if hermes_available():
-        ok, detail = hermes_infer(spec.get("provider", "openrouter"), chosen,
-                                  args.timeout, spec.get("key_env"))
-        res.inference_via = f"hermes chat --provider {spec.get('provider', 'openrouter')}"
-    else:
-        status, body, err = http_json(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            payload={"model": chosen, "max_tokens": 16,
-                     "messages": [{"role": "user", "content": PROBE_PROMPT}]},
-            timeout=args.timeout,
-        )
-        ok = status == 200
-        detail = (
-            ((body or {}).get("choices") or [{}])[0].get("message", {}).get("content", "")
-            if ok else f"HTTP {status} {short(err, 90)}"
-        )
-        res.inference_via = "POST https://openrouter.ai/api/v1/chat/completions"
-    res.reply = short(detail, 80) if ok else ""
-    res.step("inference", ok, detail)
-    return res
+    def api():
+        # max_tokens is what keeps this off OpenRouter's 402: the account is
+        # charged against the request's maximum possible cost, not its actual
+        # usage, so an uncapped probe can be rejected for lack of credit.
+        ok, detail, _ = platform_lib.api_probe(
+            "openai-compat", model=chosen, key=key,
+            base_url="https://openrouter.ai/api/v1",
+            max_tokens=probe_budget(args), timeout=args.timeout)
+        return ok, detail
+
+    return run_inference(res, args, provider=spec.get("provider", "openrouter"),
+                         model=chosen, key_env=spec.get("key_env"), api=api,
+                         api_label="POST https://openrouter.ai/api/v1/chat/completions")
 
 
 def check_gemini(spec: dict, args) -> Result:
@@ -412,41 +453,16 @@ def check_gemini(spec: dict, args) -> Result:
         return res
 
     provider = spec.get("provider", "custom:gemini")
-    if hermes_available():
-        ok, detail = hermes_infer(provider, chosen, args.timeout, spec.get("key_env"))
-        res.inference_via = f"hermes chat --provider {provider}"
-        if not ok:
-            # Hermes route not usable — prove the key and model still work
-            # directly, so the failure is attributed correctly.
-            status, body, err = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{chosen}:generateContent",
-                headers={"x-goog-api-key": key},
-                payload={"contents": [{"parts": [{"text": PROBE_PROMPT}]}]},
-                timeout=args.timeout,
-            )
-            if status == 200:
-                res.step("direct API cross-check", True,
-                         "key and model work; the Hermes provider route is the problem")
-    else:
-        status, body, err = http_json(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{chosen}:generateContent",
-            headers={"x-goog-api-key": key},
-            payload={"contents": [{"parts": [{"text": PROBE_PROMPT}]}]},
-            timeout=args.timeout,
-        )
-        ok = status == 200
-        detail = (
-            "".join(
-                p.get("text", "")
-                for p in (((body or {}).get("candidates") or [{}])[0]
-                          .get("content", {}).get("parts", []))
-            )
-            if ok else f"HTTP {status} {short(err, 90)}"
-        )
-        res.inference_via = "POST https://generativelanguage.googleapis.com/v1beta/…:generateContent"
-    res.reply = short(detail, 80) if ok else ""
-    res.step("inference", ok, detail)
-    return res
+
+    def api():
+        ok, detail, _ = platform_lib.api_probe(
+            "gemini", model=chosen, key=key, max_tokens=probe_budget(args),
+            timeout=args.timeout)
+        return ok, detail
+
+    return run_inference(
+        res, args, provider=provider, model=chosen, key_env=spec.get("key_env"), api=api,
+        api_label="POST https://generativelanguage.googleapis.com/v1beta/…:generateContent")
 
 
 # Embedding-model exclusion and supervisor state both live in the shared lib.
@@ -500,34 +516,18 @@ def check_ollama(spec: dict, args) -> Result:
         return res
 
     provider = spec.get("provider", "custom:ollama")
-    if hermes_available():
-        ok, detail = hermes_infer(provider, chosen, args.timeout, spec.get("key_env"))
-        res.inference_via = f"hermes chat --provider {provider}"
-    else:
-        ok = False
-        detail = ""
-    if not ok:
-        # Native Ollama API — no key, local only. Also the attribution path when
-        # the Hermes custom provider is not wired up.
-        status, body, err = http_json(
-            f"{host}/api/generate",
-            payload={"model": chosen, "prompt": PROBE_PROMPT, "stream": False},
-            timeout=args.timeout,
-        )
-        native_ok = status == 200
-        if native_ok and hermes_available():
-            res.step("hermes route", False,
-                     "native Ollama works; the Hermes custom:ollama provider did not answer")
-            res.inference_via = f"POST {host}/api/generate (native)"
-            res.reply = short((body or {}).get("response", ""), 80)
-            res.step("inference", True, short((body or {}).get("response", "")))
-            return res
-        ok = native_ok
-        detail = (body or {}).get("response", "") if ok else f"HTTP {status} {short(err, 90)}"
-        res.inference_via = f"POST {host}/api/generate (native)"
-    res.reply = short(detail, 80) if ok else ""
-    res.step("inference", ok, detail)
-    return res
+
+    def api():
+        # Local and free, but still bounded: num_predict caps generation so a
+        # probe cannot sit there producing tokens on a slow local model.
+        ok, detail, _ = platform_lib.api_probe(
+            "ollama", model=chosen, base_url=host,
+            max_tokens=probe_budget(args), timeout=args.timeout)
+        return ok, detail
+
+    return run_inference(res, args, provider=provider, model=chosen,
+                         key_env=spec.get("key_env"), api=api,
+                         api_label=f"POST {host}/api/generate (native)")
 
 
 CHECKERS = {
@@ -615,7 +615,20 @@ def cmd_runtime(args) -> int:
               f"{info.get('op_references', 0):>3} op refs   ({state})")
     if validation:
         lean = (profiles.get("profiles") or {}).get(validation) or {}
-        print(f"\n  validation runs in '{validation}': "
+        # Measured, not assumed: this is what Hermes itself reports.  (v1.0.4)
+        isolated = lean.get("isolated")
+        if isolated:
+            print(f"\n  isolation        : MEASURED — layout '{lean.get('selection_layout')}', "
+                  f"hermes sees {lean.get('op_references')} op:// reference(s)")
+        elif isolated is False:
+            print(f"\n  isolation        : FAILED — {lean.get('isolation_detail')}")
+            for att in lean.get("isolation_attempts") or []:
+                print(f"      tried {att.get('layout'):<12} refs={att.get('refs')}  "
+                      f"{(att.get('detail') or '')[:60]}")
+        else:
+            print("\n  isolation        : not measured yet — run a probe or "
+                  "`jack profiles --rebuild`")
+        print(f"  validation runs in '{validation}': "
               f"{full.get('mcp_servers', 0) - lean.get('mcp_servers', 0)} fewer MCP server(s), "
               f"{full.get('plugins', 0) - lean.get('plugins', 0)} fewer plugin(s), "
               f"{full.get('op_references', 0) - lean.get('op_references', 0)} fewer op:// reference(s)")
@@ -647,6 +660,13 @@ def main() -> int:
                     help=f"per-check ceiling in seconds (default {DEFAULT_TIMEOUT})")
     ap.add_argument("--refresh-models", action="store_true",
                     help="re-query the Anthropic catalog instead of the 24h cache")
+    ap.add_argument("--via", choices=("api", "hermes", "both"), default=None,
+                    help="which inference leg validation uses. 'api' (default) is a "
+                         "capped vendor call and never spends more than --max-tokens; "
+                         "'hermes' exercises the Hermes runtime but cannot be capped")
+    ap.add_argument("--max-tokens", type=int, default=None,
+                    help="output cap for the capped API leg (8-64, default from "
+                         "routing.yaml validation.max_tokens)")
     ap.add_argument("--runtime", action="store_true",
                     help="report how a fresh `hermes chat` differs from the running "
                          "gateway, and exit (no provider calls, no spend)")

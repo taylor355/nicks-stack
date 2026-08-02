@@ -275,15 +275,14 @@ def hermes_child_env(extra: dict | None = None, yolo: bool = False,
     if yolo:
         env.setdefault("HERMES_YOLO_MODE", "1")
     if profile:
-        built = profile_ensure(profile)
-        if built.get("path"):
-            # HERMES_HOME is the config root (gateway-run.sh exports it,
-            # bootstrap.sh sets it, scripts/orgo_desktop/client.py reads it),
-            # so pointing it at the profile directory IS the existing startup
-            # path — nothing new is executed. HERMES_PROFILE is set alongside
-            # it as the name label Hermes' own tooling reads.
-            env["HERMES_HOME"] = built["path"]
-            env["HERMES_PROFILE"] = profile
+        # v1.0.4: apply exactly ONE selection layout, and only one that has
+        # been MEASURED to isolate on this machine. v1.0.3 set HERMES_HOME and
+        # HERMES_PROFILE together, which is self-defeating: if Hermes resolves
+        # a named profile as $HERMES_HOME/profiles/$HERMES_PROFILE/, pointing
+        # HERMES_HOME into the profile makes it look for
+        # profiles/validation/profiles/validation/, find nothing, and fall
+        # back to the default config — the full 21-reference secret map.
+        env.update(profile_env_overrides(profile))
     if extra:
         env.update({k: str(v) for k, v in extra.items()})
     return env
@@ -313,6 +312,115 @@ _NEVER_IN_DERIVED = ("mcp_servers", "plugins", "secrets", "platform_toolsets",
                      "known_plugin_toolsets", "memory", "browser", "skills",
                      "delegation", "image_gen", "stt", "code_execution",
                      "hooks_auto_accept", "session_reset")
+
+
+PROBE_PROMPT = "Reply with exactly: ok"
+
+
+def api_probe(vendor: str, *, model: str, key: str | None = None,
+              base_url: str | None = None, max_tokens: int = 16, timeout: int = 30,
+              prompt: str = PROBE_PROMPT) -> tuple[bool, str, str]:
+    """One capped completion straight at a vendor API.  (v1.0.4)
+
+    ONE implementation, used by both the provider doctor and `jack doctor
+    --providers`, so a validation call cannot be capped in one tool and
+    uncapped in the other.
+
+    Every vendor here takes an explicit output cap and it is always set:
+    Anthropic/OpenAI-compatible `max_tokens`, Gemini
+    `generationConfig.maxOutputTokens`, Ollama `options.num_predict`. This is
+    what keeps a credential check off OpenRouter's HTTP 402 — that account is
+    charged against a request's MAXIMUM possible cost, so an uncapped probe
+    advertising the model's full completion budget is rejected even when the
+    probe would only ever use a handful of tokens.
+
+    Returns (ok, detail, label). No secret is printed: `key` is used as a
+    header and every error string is scrubbed."""
+    if vendor == "anthropic":
+        url = f"{(base_url or 'https://api.anthropic.com').rstrip('/')}/v1/messages"
+        status, body, err = http_json(
+            url, headers={"x-api-key": key or "", "anthropic-version": "2023-06-01"},
+            payload={"model": model, "max_tokens": max_tokens,
+                     "messages": [{"role": "user", "content": prompt}]},
+            timeout=timeout)
+        if status == 200:
+            return True, "".join(b.get("text", "") for b in (body or {}).get("content", [])), url
+        return False, f"HTTP {status} {scrub(err)[:90]}", url
+
+    if vendor == "openai-compat":
+        url = f"{(base_url or 'https://openrouter.ai/api/v1').rstrip('/')}/chat/completions"
+        status, body, err = http_json(
+            url, headers={"Authorization": f"Bearer {key or ''}"},
+            payload={"model": model, "max_tokens": max_tokens,
+                     "messages": [{"role": "user", "content": prompt}]},
+            timeout=timeout)
+        if status == 200:
+            choice = ((body or {}).get("choices") or [{}])[0]
+            return True, (choice.get("message") or {}).get("content", ""), url
+        return False, f"HTTP {status} {scrub(err)[:90]}", url
+
+    if vendor == "gemini":
+        base = (base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        url = f"{base}/models/{model}:generateContent"
+        status, body, err = http_json(
+            url, headers={"x-goog-api-key": key or ""},
+            payload={"contents": [{"parts": [{"text": prompt}]}],
+                     "generationConfig": {"maxOutputTokens": max_tokens}},
+            timeout=timeout)
+        if status == 200:
+            parts = (((body or {}).get("candidates") or [{}])[0]
+                     .get("content", {}).get("parts", []))
+            return True, "".join(p.get("text", "") for p in parts), url
+        return False, f"HTTP {status} {scrub(err)[:90]}", url
+
+    if vendor == "ollama":
+        url = f"{(base_url or DEFAULT_OLLAMA_HOST).rstrip('/')}/api/generate"
+        status, body, err = http_json(
+            url, payload={"model": model, "prompt": prompt, "stream": False,
+                          "options": {"num_predict": max_tokens}},
+            timeout=timeout)
+        if status == 200:
+            return True, (body or {}).get("response", ""), url
+        return False, f"HTTP {status} {scrub(err)[:90]}", url
+
+    return False, f"no capped probe implemented for vendor '{vendor}'", ""
+
+
+def vendor_for(provider: str) -> str:
+    """Map a Hermes provider name onto the vendor request shape it speaks."""
+    bare = (provider or "").replace("custom:", "").lower()
+    if "anthropic" in bare:
+        return "anthropic"
+    if "gemini" in bare or "google" in bare:
+        return "gemini"
+    if "ollama" in bare:
+        return "ollama"
+    # OpenRouter and every declared custom provider use transport
+    # chat_completions (config.yaml providers.*), i.e. the OpenAI shape.
+    return "openai-compat"
+
+
+def validation_spec(routing: dict | None = None) -> dict:
+    """The validation cost policy from routing.yaml (v1.0.4).
+
+    max_tokens caps every probe that goes to a vendor API. `inference` selects
+    which leg validation uses: the capped API call (cheap, the default), the
+    Hermes runtime leg (uncapped — no verified way exists to bound it), or
+    both. Normal routing never reads this."""
+    routing = routing if routing is not None else load_yaml(ROUTING_FILE)
+    spec = routing.get("validation")
+    spec = spec if isinstance(spec, dict) else {}
+    try:
+        max_tokens = int(spec.get("max_tokens", 16))
+    except (TypeError, ValueError):
+        max_tokens = 16
+    mode = str(spec.get("inference", "api")).lower()
+    return {
+        # Clamped: below ~8 a model cannot answer at all; above 64 a probe is
+        # no longer "the smallest practical completion".
+        "max_tokens": max(8, min(max_tokens, 64)),
+        "inference": mode if mode in ("api", "hermes", "both") else "api",
+    }
 
 
 def profiles_spec(routing: dict | None = None) -> dict:
@@ -499,6 +607,17 @@ def _profile_link(path: Path, spec: dict) -> None:
     """Symlink credentials and identity in from the real profile. Linked, not
     copied — no secret is duplicated on disk, and permissions stay the
     originals'."""
+    # `.hermes` -> the profile directory itself, so a resolver that derives the
+    # config dir from $HOME ($HOME/.hermes/config.yaml) lands on the same
+    # derived config as one that reads HERMES_HOME. Costs one symlink and lets
+    # the layout detector test that possibility.  (v1.0.4)
+    selflink = path / ".hermes"
+    try:
+        if not selflink.exists() and not selflink.is_symlink():
+            selflink.symlink_to(path)
+    except OSError:
+        pass
+
     for rel in spec.get("link") or []:
         src, dst = HERMES_HOME / rel, path / rel
         try:
@@ -515,6 +634,191 @@ def _profile_link(path: Path, spec: dict) -> None:
             dst.symlink_to(src)
         except OSError:
             continue                      # a missing link is not fatal
+
+
+# --------------------------------------------------------------------------
+# Profile selection: measured, not assumed  (v1.0.4)
+# --------------------------------------------------------------------------
+# Which environment variable actually makes Hermes load a profile's config is
+# a property of the installed Hermes, and this repo documents two conventions
+# without stating which one the config loader honours:
+#
+#   ~/.hermes/profiles/<name>/     named-profile layout
+#                                  (skills/…/hermes-gateway-onboarding/SKILL.md)
+#   HERMES_PROFILE                 profile-name variable
+#                                  (local-packages/latitude-telemetry-hermes/…)
+#   HERMES_HOME                    config root (gateway-run.sh, bootstrap.sh,
+#                                  scripts/orgo_desktop/client.py)
+#
+# So we stop guessing and MEASURE. Each candidate layout is applied to a real
+# `hermes config get secrets.onepassword.env` — the exact thing being isolated
+# — and the layout wins only if Hermes then reports the profile's trimmed
+# secret map instead of the default one. `hermes config get <key>` and
+# `hermes config env-path` are both documented in-repo
+# (skills/social-media/x-mcp-integration/references/announcement-research.md,
+# skills/note-taking/agent-obsidian-vault/SKILL.md). No model call is made and
+# no secret value is read: the output contains op:// reference paths only.
+#
+# If no layout isolates, that is reported as a fact and probes run on the full
+# runtime. A profile is never allowed to silently pretend.
+PROFILE_LAYOUTS = ("profile-var", "hermes-home", "home-root")
+LAYOUT_STAMP = ".layout.json"
+LAYOUT_PROBE_TIMEOUT = 25
+
+
+def profile_layout_env(name: str, layout: str, path: Path) -> dict:
+    """The environment overrides for one candidate selection layout."""
+    if layout == "profile-var":
+        # Native convention: HERMES_HOME stays the real config root and the
+        # profile is named. Hermes is expected to look in HERMES_HOME/profiles/<name>/.
+        return {"HERMES_PROFILE": name}
+    if layout == "hermes-home":
+        # Config-root repoint: the profile directory IS the config root, so a
+        # profile name would be meaningless and must not be set.
+        return {"HERMES_HOME": str(path), "HERMES_PROFILE": "default"}
+    if layout == "home-root":
+        # Some resolvers derive the config dir from $HOME. The profile carries
+        # a `.hermes` self-link so $HOME/.hermes/config.yaml lands on the same
+        # derived file.
+        return {"HOME": str(path), "HERMES_HOME": str(path / ".hermes"),
+                "HERMES_PROFILE": "default"}
+    return {}
+
+
+def _base_child_env() -> dict:
+    """The v1.0.2 bridged environment, with no profile selection applied."""
+    env = dict(os.environ)
+    env["HOME"] = str(HERMES_HOME.parent)
+    env["HERMES_HOME"] = str(HERMES_HOME)
+    env["PATH"] = HERMES_PATH + ":" + os.environ.get("PATH", "")
+    env.update(parse_env_file(ROOT_ENV))
+    env.update(parse_env_file(HERMES_ENV))
+    token = op_token()
+    if token:
+        env["OP_SERVICE_ACCOUNT_TOKEN"] = token
+    return env
+
+
+def _count_op_refs(text: str) -> int:
+    return len(re.findall(r"op://", text or ""))
+
+
+def profile_measure_layout(name: str, layout: str, path: Path) -> dict:
+    """Ask Hermes itself which secret map it sees under one layout.
+
+    Returns {layout, ok, refs, detail}. `refs` is the number of op://
+    references Hermes reports — the number the whole exercise is about."""
+    out = {"layout": layout, "ok": False, "refs": None, "detail": ""}
+    if not have("hermes"):
+        out["detail"] = "hermes not on PATH"
+        return out
+    env = _base_child_env()
+    env.update(profile_layout_env(name, layout, path))
+    try:
+        proc = subprocess.run(["hermes", "config", "get", "secrets.onepassword.env"],
+                              capture_output=True, text=True, check=False,
+                              stdin=subprocess.DEVNULL, env=env,
+                              timeout=LAYOUT_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # A non-isolating layout resolves the full map and stalls; that is
+        # itself evidence the layout did not work.
+        out["detail"] = f"timed out after {LAYOUT_PROBE_TIMEOUT}s (full map being resolved?)"
+        return out
+    except OSError as exc:
+        out["detail"] = f"could not run hermes config get: {exc}"
+        return out
+
+    blob = f"{proc.stdout}\n{proc.stderr}"
+    refs = _count_op_refs(blob)
+    out["refs"] = refs
+    if proc.returncode != 0 and refs == 0:
+        out["detail"] = scrub(proc.stderr or proc.stdout or f"exit {proc.returncode}")[:160]
+        return out
+
+    expected = profile_expected_refs(name)
+    if refs and expected and refs <= expected:
+        out["ok"] = True
+        out["detail"] = f"hermes reports {refs} op:// reference(s) — the profile's map"
+    elif refs:
+        out["detail"] = (f"hermes reports {refs} op:// reference(s), the default map "
+                         f"(profile declares {expected}) — this layout does not isolate")
+    else:
+        out["detail"] = "hermes reported no secret map — inconclusive"
+    return out
+
+
+def profile_expected_refs(name: str) -> int:
+    """How many op:// references the derived profile declares."""
+    routing = load_yaml(ROUTING_FILE)
+    spec = profiles_spec(routing).get(name) or {}
+    derived = derive_profile_config(load_yaml(CONFIG_FILE), routing, spec)
+    return len(((derived.get("secrets") or {}).get("onepassword") or {}).get("env") or {})
+
+
+def profile_detect_layout(name: str, force: bool = False) -> dict:
+    """Find the selection layout that actually isolates, and remember it.
+
+    Cached beside the derived config and keyed to its digest, so a rebuilt
+    profile is re-measured rather than trusted."""
+    built = profile_ensure(name)
+    path = built.get("path")
+    if not path:
+        return {"layout": None, "isolated": False, "reason": built.get("reason", ""),
+                "attempts": []}
+    path = Path(path)
+    stamp = path / LAYOUT_STAMP
+    digest = ""
+    try:
+        digest = (path / PROFILE_STAMP).read_text().strip()
+    except OSError:
+        pass
+
+    if not force:
+        try:
+            cached = json.loads(stamp.read_text())
+            if cached.get("digest") == digest and digest:
+                return cached
+        except (OSError, ValueError):
+            pass
+
+    attempts = []
+    winner = None
+    for layout in PROFILE_LAYOUTS:
+        result = profile_measure_layout(name, layout, path)
+        attempts.append(result)
+        if result["ok"]:
+            winner = layout
+            break
+
+    report = {
+        "layout": winner,
+        "isolated": bool(winner),
+        "digest": digest,
+        "expected_refs": profile_expected_refs(name),
+        "attempts": attempts,
+        "reason": ("measured" if winner else
+                   "no selection layout isolated the profile — probes use the full runtime"),
+    }
+    try:
+        stamp.write_text(json.dumps(report, indent=2) + "\n")
+        os.chmod(stamp, 0o600)
+    except OSError:
+        pass
+    return report
+
+
+def profile_env_overrides(name: str) -> dict:
+    """Environment overrides for a profile, or {} when it cannot isolate.
+
+    Returning {} is the honest outcome: the caller then runs on the full
+    runtime rather than on a profile that Hermes is quietly ignoring."""
+    built = profile_ensure(name)
+    if not built.get("path"):
+        return {}
+    detected = profile_detect_layout(name)
+    if not detected.get("isolated"):
+        return {}
+    return profile_layout_env(name, detected["layout"], Path(built["path"]))
 
 
 def profile_report(name: str | None = None) -> dict:
@@ -554,6 +858,20 @@ def profile_report(name: str | None = None) -> dict:
                                            .get("onepassword") or {}).get("env") or {}),
                 path=str(path) if path else "(rejected: outside HERMES_HOME)",
                 built=bool(path and (path / "config.yaml").is_file()),
+            )
+            # Whether Hermes actually honours this profile is measured, not
+            # assumed — read the cached measurement, never re-run it here.
+            measured = {}
+            if path:
+                try:
+                    measured = json.loads((path / LAYOUT_STAMP).read_text())
+                except (OSError, ValueError):
+                    measured = {}
+            entry.update(
+                isolated=measured.get("isolated"),
+                selection_layout=measured.get("layout"),
+                isolation_detail=measured.get("reason", "not measured yet"),
+                isolation_attempts=measured.get("attempts") or [],
             )
         out["profiles"][pname] = entry
     if name:
@@ -689,7 +1007,10 @@ def hermes_runtime_diagnose(key_env: str | None = None) -> list[str]:
             # A validation profile trims the map to the credentials inference
             # actually needs, so say what a probe really pays.  (v1.0.3)
             prof = profile_for("validation")
-            lean = (profile_report(prof) or {}).get("op_references") if prof else None
+            report = profile_report(prof) if prof else {}
+            # Only claim the saving when the profile is MEASURED to be in
+            # effect — a built-but-ignored profile saves nothing.  (v1.0.4)
+            lean = report.get("op_references") if report.get("isolated") else None
             if lean is not None and lean < refs:
                 findings.append(
                     f"1Password map enabled, token and `op` present — the full runtime "
@@ -723,11 +1044,18 @@ def hermes_runtime_diagnose(key_env: str | None = None) -> list[str]:
         prof = profile_for("validation")
         if prof:
             built = profile_ensure(prof)
-            if built.get("path"):
+            isolated = built.get("path") and profile_detect_layout(prof).get("isolated")
+            if isolated:
                 findings.append(
                     f"the full runtime enables {len(enabled)} MCP server(s) (slowest "
                     f"connect_timeout={max(timeouts or [0]):.0f}s), but validation runs in "
                     f"profile '{prof}' with none of them — this is not the stall"
+                )
+            elif built.get("path"):
+                findings.append(
+                    f"validation profile '{prof}' is built but hermes does NOT honour it, so "
+                    f"probes still pay the full runtime: {len(enabled)} MCP server(s), "
+                    f"slowest connect_timeout={max(timeouts or [0]):.0f}s"
                 )
             else:
                 findings.append(
@@ -963,6 +1291,13 @@ def classify_failure(text: str, status: int | None = None) -> tuple[str, str]:
                                     "no key", "missing key", "credential")):
         return ("credential",
                 "key is missing, wrong or lacks access — check the 1Password field and `op read`")
+    if status in (402,) or any(w in blob for w in
+                               ("insufficient credit", "insufficient_quota", "more credits",
+                                "payment required", "quota", "billing", "afford")):
+        return ("quota",
+                "the account cannot cover the request's MAXIMUM cost — providers price by "
+                "max_tokens, not usage. Validation caps this (routing.yaml "
+                "validation.max_tokens); an uncapped `--via hermes` leg cannot be capped")
     if status in (404,) or any(w in blob for w in
                                ("model not found", "unknown model", "does not exist",
                                 "invalid model", "no such model")):
@@ -1212,6 +1547,7 @@ def runtime_report() -> dict:
     op = (cfg.get("secrets") or {}).get("onepassword") or {}
     validation = profile_for("validation")
     built = profile_ensure(validation) if validation else {"reason": "none declared"}
+    isolation = profile_detect_layout(validation) if validation and built.get("path") else {}
     return {
         "hermes_on_path": have("hermes"),
         "root_env_present": ROOT_ENV.is_file(),
@@ -1227,6 +1563,9 @@ def runtime_report() -> dict:
         "validation_profile": validation,
         "validation_profile_usable": bool(built.get("path")),
         "validation_profile_reason": built.get("reason", ""),
+        "validation_profile_isolated": bool(isolation.get("isolated")),
+        "validation_profile_layout": isolation.get("layout"),
+        "validation_profile_isolation_detail": isolation.get("reason", ""),
         "findings": hermes_runtime_diagnose(),
     }
 

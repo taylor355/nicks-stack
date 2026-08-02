@@ -277,3 +277,41 @@ profiles:
       - .op.env
       - auth.json
       - SOUL.md
+
+# ==========================================================================
+# Validation cost policy  (v1.0.4)
+# ==========================================================================
+# A credential check must be cheap. It was not: with `hermes` present, the
+# doctor's inference step always went through `hermes chat`, and Hermes
+# advertises the model's own maximum completion budget. OpenRouter prices a
+# request by its MAXIMUM possible cost, so an uncapped probe asking for up to
+# 128000 output tokens returns HTTP 402 (insufficient credits) on an account
+# that could easily afford the four tokens the probe actually uses.
+#
+# MECHANISM (verified — and one deliberate non-mechanism)
+#   The vendor APIs all take an explicit output cap, and that is the lever
+#   used here: Anthropic `max_tokens`, OpenAI-compatible `max_tokens`,
+#   Gemini `generationConfig.maxOutputTokens`, Ollama `options.num_predict`.
+#
+#   There is NO verified way to cap `hermes chat`'s advertised completion
+#   budget: no --max-tokens flag is documented for `hermes chat` (the
+#   documented flags are -Q, -q, -m/--model, --provider, --source, -t,
+#   --max-turns, --accept-hooks, --tui), and
+#   skills/productivity/secret-manager-setup/SKILL.md:130 records that
+#   `providers.<name>.max_output_tokens` is NOT a recognised provider key.
+#   Nothing is invented here to fill that gap.
+#
+# So validation defaults to the capped vendor call, and the Hermes runtime leg
+# becomes opt-in. Both are still available:
+#
+#   nicks-stack-provider-doctor                 # api  — capped, cheap (default)
+#   nicks-stack-provider-doctor --via hermes    # exercises the Hermes runtime
+#   nicks-stack-provider-doctor --via both      # capped call, then the runtime
+#
+# This applies ONLY to validation/probe commands. `nicks-stack-route run` is
+# real work and is never capped.
+validation:
+  # Smallest completion that can still carry the probe's answer.
+  max_tokens: 16
+  # api | hermes | both. `api` never spends more than max_tokens.
+  inference: api

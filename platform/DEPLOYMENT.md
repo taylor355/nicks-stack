@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.0.3 — frozen.** From here the work is agent identity and company
+**Platform v1.0.4 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,81 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.0.4 — the profile now actually isolates, and probes are capped
+
+**Bug 1 — the v1.0.3 profile was built correctly and then ignored.** A direct
+`hermes chat` still resolved the whole default map (AgentMail, AgentPhone,
+GitHub, Firecrawl, Telegram, XAI…), not the profile's three. Cause was in
+v1.0.3's own code: `hermes_child_env()` set **both** `HERMES_HOME` (repointed
+into the profile) **and** `HERMES_PROFILE=validation`. If Hermes resolves a
+named profile as `$HERMES_HOME/profiles/$HERMES_PROFILE/`, that combination
+asks for `profiles/validation/profiles/validation/` — which does not exist — so
+it falls back to the default config. The profile was never in play.
+
+The fix is not a different guess. Exactly **one** selection layout is applied,
+and only one that has been **measured to work on this machine**:
+
+| Layout | What it sets | Grounded in |
+|---|---|---|
+| `profile-var` | `HERMES_PROFILE=<name>`, `HERMES_HOME` left alone | named profiles live at `~/.hermes/profiles/<name>/` (`hermes-gateway-onboarding/SKILL.md`); `HERMES_PROFILE` (`latitude-telemetry-hermes/…/config.py`) |
+| `hermes-home` | `HERMES_HOME=<profile dir>`, no profile name | `HERMES_HOME` is the config root (`gateway-run.sh`, `bootstrap.sh`, `orgo_desktop/client.py`) |
+| `home-root` | `HOME=<profile dir>` + `HERMES_HOME=<profile dir>/.hermes` | for a resolver that derives the config dir from `$HOME` |
+
+Each candidate is applied to a real `hermes config get secrets.onepassword.env`
+— **the exact thing being isolated** — and wins only if Hermes then reports the
+profile's trimmed map instead of the default one. No model call, no secret
+value: the output is `op://` reference paths. The winner is cached beside the
+derived config and re-measured whenever the profile is rebuilt.
+
+If **no** layout isolates, that is reported as a fact and probes run on the
+full runtime. A profile is never allowed to silently pretend:
+
+```bash
+sudo jack profiles          # "isolated via profile-var" / "NOT ISOLATED - hermes ignores it"
+sudo nicks-stack-provider-doctor --runtime   # the measurement and every attempt
+```
+
+`verify.sh` section 8 raises an advisory when the profile is built but not
+honoured — the exact silent regression v1.0.3 shipped.
+
+**Bug 2 — validation asked for the model's full completion budget.** OpenRouter
+prices a request by its **maximum possible cost**, so a probe advertising up to
+128000 output tokens returns **HTTP 402** on an account that could easily afford
+the four tokens the probe actually uses.
+
+Every validation probe is now capped, through one shared implementation
+(`lib.api_probe()`) used by both `nicks-stack-provider-doctor` and
+`jack doctor --providers`, so a call cannot be capped in one tool and uncapped
+in the other:
+
+| Vendor | Cap field |
+|---|---|
+| Anthropic | `max_tokens` |
+| OpenRouter / OpenAI-compatible | `max_tokens` |
+| Gemini | `generationConfig.maxOutputTokens` |
+| Ollama | `options.num_predict` |
+
+The default is `validation.max_tokens: 16` in `routing.yaml` (clamped 8–64).
+**There is no verified way to cap `hermes chat`** — no `--max-tokens` flag is
+documented for it, and `providers.<name>.max_output_tokens` is recorded in-repo
+as an unrecognised provider key — so the Hermes runtime leg is now **opt-in**:
+
+```bash
+sudo nicks-stack-provider-doctor                 # capped vendor call (default)
+sudo nicks-stack-provider-doctor --via hermes    # exercise the Hermes runtime (uncapped)
+sudo nicks-stack-provider-doctor --via both      # capped call, then the runtime leg
+sudo nicks-stack-provider-doctor --max-tokens 8
+sudo jack doctor --providers                     # capped
+sudo jack doctor --providers --via both
+```
+
+When both legs run they are reported separately, so a runtime problem is never
+mistaken for a credential problem. HTTP 402 now classifies as `quota` with the
+cause spelled out rather than as a generic provider error.
+
+**This applies only to validation and probe commands.** `nicks-stack-route run`
+is real work and is never capped.
 
 ### v1.0.3 — runtime profiles
 
@@ -882,6 +957,9 @@ sudo supervisorctl reread && sudo supervisorctl update
 | `--runtime`: "1Password map is ENABLED … but no OP_SERVICE_ACCOUNT_TOKEN is reachable" | `config.yaml` has 21 `op://` references and `op read` has no token, so it prompts on `/dev/tty` once per reference | Write the token to `/root/.hermes/.op.env` (mode 600) and restart the gateway — do not raise the timeout |
 | A probe reports "[ran on the full runtime]" or "[full runtime]" | The `validation` profile could not be built or failed at startup, so the call fell back | `sudo jack profiles` shows the reason; `sudo jack profiles --rebuild` regenerates it. Validation still works meanwhile — this is a performance notice, not a failure |
 | `jack profiles` shows validation with the same counts as gateway | `profiles.use.validation` points at `gateway`, or `routing.yaml` has no `profiles:` block | Set `profiles.use.validation: validation` in `routing.yaml` and redeploy |
+| `jack profiles`: "NOT ISOLATED - hermes ignores it" | This Hermes honours none of the three selection layouts | Probes still work on the full runtime. `sudo nicks-stack-provider-doctor --runtime` lists every attempt and the reference count each produced — send that output when reporting it |
+| Validation still resolves AgentMail/GitHub/Telegram/etc. | The profile is not being honoured, or was built before the fix | `sudo jack profiles --rebuild` then `sudo jack profiles`; the state column must read "isolated via …" |
+| OpenRouter returns HTTP 402 during validation | An uncapped request — OpenRouter charges against maximum possible cost | Use the default capped path (`nicks-stack-provider-doctor` with no `--via`). `--via hermes` cannot be capped and can 402 on a low-credit account |
 | `verify.sh`: "declares dir=… which is not inside /root/.hermes" | A `profiles.<name>.dir` in `routing.yaml` escapes `HERMES_HOME` | Make it relative and inside `HERMES_HOME`, e.g. `profiles/validation` |
 | `/mode` does nothing in Telegram | The `provider-routing` skill is not deployed, or the CLI symlink is missing | `sudo bash platform/verify.sh` → section 7; redeploy with `platform/update.sh` |
 | `nicks-stack-route run deep` exits 3 | By design — premium routes need explicit consent | Re-run with `--confirm` after the user agrees |

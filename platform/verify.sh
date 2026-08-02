@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.0.3"
+readonly SCRIPT_VERSION="1.0.4"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -556,8 +556,18 @@ else
     if [[ -z "$VAL_PROFILE" || "$VAL_PROFILE" == "null" ]]; then
       warn "no validation runtime profile declared — one-shot validation loads the full runtime"
     elif [[ "$(json_bool validation_profile_usable)" == "true" ]]; then
-      pass "validation runs in the '$VAL_PROFILE' profile (lean runtime)"
-      # Prove it is actually leaner than the gateway, from the same report.
+      # Built is not the same as honoured. v1.0.3 built a correct profile that
+      # Hermes ignored, so validation still resolved all 21 op:// references.
+      # The isolation result below is MEASURED by asking Hermes which secret
+      # map it sees, not inferred from the file existing.  (v1.0.4)
+      if [[ "$(json_bool validation_profile_isolated)" == "true" ]]; then
+        VAL_LAYOUT="$(printf '%s' "$RUNTIME_JSON" | sed -n 's/.*"validation_profile_layout"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+        pass "validation profile '$VAL_PROFILE' is honoured by hermes (selection layout: ${VAL_LAYOUT:-unknown})"
+      else
+        warn "validation profile '$VAL_PROFILE' is built but hermes does NOT honour it — probes fall back to the full runtime and resolve every op:// reference. Run: sudo jack profiles"
+      fi
+      # The delta below describes what the profile WOULD save; only report it
+      # as a live saving when the profile is actually honoured.
       PROFILE_DELTA="$(python3 - "$PROFILE_JSON" "$VAL_PROFILE" <<'PROFILECHECK'
 import json, sys
 rep = json.loads(sys.argv[1]); name = sys.argv[2]
@@ -572,10 +582,13 @@ PROFILECHECK
 )"
       while IFS='|' read -r verdict message; do
         [[ -n "$message" ]] || continue
-        case "$verdict" in
-          PASS) pass "$message" ;;
-          *)    warn "$message" ;;
-        esac
+        if [[ "$(json_bool validation_profile_isolated)" != "true" ]]; then
+          note "$message  (not in effect — profile is not honoured)"
+        elif [[ "$verdict" == "PASS" ]]; then
+          pass "$message"
+        else
+          warn "$message"
+        fi
       done <<< "$PROFILE_DELTA"
     else
       warn "validation profile '$VAL_PROFILE' is not usable — probes fall back to the full runtime"

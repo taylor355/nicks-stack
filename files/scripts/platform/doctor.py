@@ -12,13 +12,15 @@
 # and the routing CLI use — so no two tools can disagree about the machine.
 #
 #   jack doctor                  full report (no billable calls)
-#   jack doctor --providers      + one real inference per cloud provider
+#   jack doctor --providers      + one CAPPED inference per provider
+#   jack doctor --providers --via hermes   + the (uncapped) Hermes runtime leg
 #   jack doctor --json           machine-readable
 #   jack doctor --quiet          warnings and the verdict only
 #
 # By default the doctor is FREE and FAST: it inspects configuration, services
 # and local state, and makes no paid API call. --providers adds the end-to-end
-# credential -> catalog -> inference validation.
+# credential -> catalog -> inference validation, capped at routing.yaml's
+# validation.max_tokens so a health check can never burn quota.  (v1.0.4)
 #
 # SECRET SAFETY: credentials are reported as present/absent with their source.
 # No value is ever printed, and vendor errors are scrubbed before display.
@@ -124,7 +126,8 @@ def section_services(out: Out, state: dict) -> None:
             out.item(name, state_txt, "warn")
 
 
-def section_providers(out: Out, state: dict, probe: bool, timeout: int) -> None:
+def section_providers(out: Out, state: dict, probe, timeout: int) -> None:
+    """probe is False, or the leg to use: "api" | "hermes" | "both"."""
     out.section("Providers")
     providers = state["providers"]
     if not providers:
@@ -146,31 +149,64 @@ def section_providers(out: Out, state: dict, probe: bool, timeout: int) -> None:
             out.item(label, info.get("detail") or "unavailable", "warn")
 
     if probe:
+        mode = probe if isinstance(probe, str) else "api"
+        budget = lib.validation_spec()["max_tokens"]
         out.line()
-        out.line("  live inference (one minimal call per provider):")
+        out.line(f"  live inference (one capped call per provider, "
+                 f"max_tokens={budget}):")
         for name, info in providers.items():
             if not info["enabled"] or not info["available"]:
                 continue
-            ok, detail = _probe_provider(name, info, state, timeout)
-            out.item(f"  {info['display']} inference", detail, "ok" if ok else "bad")
+            if mode in ("api", "both"):
+                ok, detail = _probe_provider(name, info, state, timeout)
+                out.item(f"  {info['display']} inference", detail, "ok" if ok else "bad")
+            if mode in ("hermes", "both") and name != "ollama":
+                # Uncapped by necessity — opt-in only.
+                h_ok, h_detail = _probe_provider_via_hermes(name, info, timeout)
+                out.item(f"  {info['display']} hermes runtime", h_detail,
+                         "ok" if h_ok else "bad")
 
 
 def _probe_provider(name: str, info: dict, state: dict, timeout: int) -> tuple[bool, str]:
-    """One real call. Ollama goes to the local daemon; cloud providers go
-    through Hermes when present so the runtime path itself is exercised."""
+    """One real, CAPPED call per provider.
+
+    v1.0.4: this goes to the vendor API through lib.api_probe(), the same
+    implementation the provider doctor uses, with the output cap from
+    routing.yaml (validation.max_tokens). A health report must never be the
+    expensive way to find out a key works — an uncapped probe advertising the
+    model's full completion budget is what OpenRouter answers with HTTP 402.
+    The Hermes runtime leg lives in `nicks-stack-provider-doctor --via hermes`,
+    which is opt-in because it cannot be capped."""
+    budget = lib.validation_spec()["max_tokens"]
+
     if name == "ollama":
         model = lib.ollama_pick_model({"models": info.get("candidates")}, state["ollama"])
         if not model:
             return False, "no chat model installed"
-        status, body, err = lib.http_json(
-            f"{state['ollama']['host']}/api/generate",
-            payload={"model": model, "prompt": PROBE_PROMPT, "stream": False},
-            timeout=timeout,
-        )
-        if status == 200:
-            return True, f"{model} → {lib.scrub((body or {}).get('response', ''))[:40]}"
-        return False, f"HTTP {status} {lib.scrub(err)[:80]}"
+        ok, detail, _ = lib.api_probe("ollama", model=model,
+                                      base_url=state["ollama"]["host"],
+                                      max_tokens=budget, timeout=timeout)
+        return (True, f"{model} → {lib.scrub(detail)[:40]}") if ok else (False, detail[:80])
 
+    model = (info.get("candidates") or [""])[0]
+    if not model:
+        return False, "no candidate model configured"
+
+    key_env = (info.get("credential") or {}).get("key")
+    key, source = lib.resolve_key_value(key_env) if key_env else (None, "not required")
+    if key_env and not key:
+        return False, f"{key_env} not resolvable ({source})"
+    ok, detail, _ = lib.api_probe(
+        lib.vendor_for(info.get("provider", name)), model=model, key=key,
+        max_tokens=budget, timeout=timeout)
+    if ok:
+        return True, f"{model} → {lib.scrub(detail)[:40]}  (max_tokens={budget})"
+    cause, action = lib.classify_failure(detail)
+    return False, f"{detail[:80]}  [{cause}: {action[:60]}]"
+
+
+def _probe_provider_via_hermes(name: str, info: dict, timeout: int) -> tuple[bool, str]:
+    """The Hermes runtime leg — uncapped, so never on the default path."""
     model = (info.get("candidates") or [""])[0]
     if not model:
         return False, "no candidate model configured"
@@ -252,7 +288,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="jack doctor",
                                  description="Taylor AI Platform health report")
     ap.add_argument("--providers", action="store_true",
-                    help="also run one real inference per available provider (costs a few tokens)")
+                    help="also run one capped inference per available provider "
+                         "(bounded by routing.yaml validation.max_tokens)")
+    ap.add_argument("--via", choices=("api", "hermes", "both"), default=None,
+                    help="which leg --providers uses: 'api' (default) is capped and cheap; "
+                         "'hermes' exercises the Hermes runtime and cannot be capped")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--quiet", action="store_true", help="warnings and verdict only")
     ap.add_argument("--no-color", action="store_true")
@@ -288,7 +328,11 @@ def main() -> int:
 
     section_platform(out, state)
     section_services(out, state)
-    section_providers(out, state, args.providers, args.timeout)
+    # --via selects the leg; the default stays the capped API call so a
+    # health report can never be the expensive way to learn a key works.
+    section_providers(out, state,
+                      (args.via or "api") if args.providers else False,
+                      args.timeout)
     section_integrations(out, state)
     section_identity(out, state)
     section_companies(out, state)

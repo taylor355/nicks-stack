@@ -16,11 +16,21 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.0.3
+version: 1.0.4
 released: 2026-08-02
 status: frozen
 description: >-
-  v1.0.3 adds runtime profiles. A one-shot validation call no longer starts the
+  v1.0.4 fixes two validation bugs. (1) The v1.0.3 profile did not isolate:
+  HERMES_HOME and HERMES_PROFILE were set together, so Hermes looked for
+  profiles/validation/profiles/validation/, found nothing and fell back to the
+  default config with all 21 op:// references. The selection layout is now
+  MEASURED — Hermes is asked which secret map it sees — and only a layout that
+  demonstrably isolates is used. (2) Provider validation asked for the model's
+  full completion budget, which OpenRouter answers with HTTP 402 because it
+  prices a request by its maximum possible cost; every validation probe is now
+  capped at validation.max_tokens (default 16) and the uncappable Hermes leg is
+  opt-in. Normal routing is unchanged.
+  v1.0.3 added runtime profiles. A one-shot validation call no longer starts the
   gateway's full runtime: `validation` is a derived config tree (generated from
   config.yaml, never hand-written) with no MCP servers, no browser tooling, no
   long-lived integrations and only the provider credentials inference needs.
@@ -46,12 +56,12 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.0.3
+  platform: 1.0.4
   bootstrap: 1.0.3
   update: 1.0.3
-  verify: 1.0.3
-  routing: 1.0.3
-  doctor: 1.0.3
+  verify: 1.0.4
+  routing: 1.0.4
+  doctor: 1.0.4
   manifest: 1.0.1
 
 # Services this platform supervises. Supervisor is the init for services on

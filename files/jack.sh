@@ -109,8 +109,16 @@ use = report.get("use") or {}
 print("Runtime profiles\n")
 print(f"  {'profile':<12} {'mcp':>4} {'plugins':>8} {'op refs':>8}   state")
 for name, info in (report.get("profiles") or {}).items():
-    state = ("full runtime" if info.get("kind") == "full"
-             else ("built" if info.get("built") else "not built yet"))
+    if info.get("kind") == "full":
+        state = "full runtime"
+    elif not info.get("built"):
+        state = "not built yet"
+    elif info.get("isolated"):
+        state = f"isolated via {info.get('selection_layout')}"
+    elif info.get("isolated") is False:
+        state = "NOT ISOLATED - hermes ignores it"
+    else:
+        state = "built, isolation not measured"
     print(f"  {name:<12} {info.get('mcp_servers', 0):>4} {info.get('plugins', 0):>8} "
           f"{info.get('op_references', 0):>8}   {state}")
 print()
@@ -127,6 +135,13 @@ if lean and lean.get("kind") != "full":
     print(f"  provider plugins kept : {', '.join(lean.get('plugin_names') or []) or 'none'}")
     print(f"  credentials kept      : {', '.join(lean.get('op_reference_names') or []) or 'none'}")
     print(f"  path                  : {lean.get('path')}")
+    if lean.get("isolated") is False:
+        print(f"\n  WARNING: hermes does not honour this profile "
+              f"({lean.get('isolation_detail')}).")
+        print("  Probes run on the full runtime. Attempts:")
+        for att in lean.get("isolation_attempts") or []:
+            print(f"    {att.get('layout'):<12} refs={att.get('refs')}  "
+                  f"{(att.get('detail') or '')[:60]}")
 PROFILES
     ;;
   manifest)
