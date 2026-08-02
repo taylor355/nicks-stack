@@ -176,21 +176,18 @@ def _probe_provider(name: str, info: dict, state: dict, timeout: int) -> tuple[b
         return False, "no candidate model configured"
     if not lib.have("hermes"):
         return False, "hermes CLI not installed — cannot exercise the runtime path"
-    import subprocess
-    # Same runtime initialisation the supervised gateway gets — bridged env,
-    # 1Password token, --accept-hooks, bounded turn, stdin closed.  (v1.0.2)
-    cmd = lib.hermes_chat_cmd(PROBE_PROMPT, source="jack-doctor", model=model,
-                              provider=info["provider"], max_turns=1)
-    try:
-        proc = lib.hermes_run(cmd, timeout, env=lib.hermes_child_env(yolo=True))
-    except subprocess.TimeoutExpired:
-        findings = lib.hermes_runtime_diagnose((info.get("credential") or {}).get("key"))
-        return False, f"timed out after {timeout}s" + (f" — {findings[0]}" if findings else "")
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, lib.scrub(str(exc))[:80]
-    if proc.returncode == 0 and proc.stdout.strip():
-        return True, f"{model} → {lib.scrub(proc.stdout)[:40]}"
-    return False, lib.scrub(proc.stderr or proc.stdout or f"exit {proc.returncode}")[:100]
+    # Same runtime initialisation the supervised gateway gets (v1.0.2), in the
+    # lean validation profile (v1.0.3), with an automatic fallback to the full
+    # runtime if that profile is not usable on this machine.
+    res = lib.hermes_probe(
+        PROBE_PROMPT, source="jack-doctor", timeout=timeout, model=model,
+        provider=info["provider"], profile=lib.profile_for("validation"),
+        key_env=(info.get("credential") or {}).get("key"), max_turns=1,
+    )
+    suffix = "  [full runtime]" if res.get("fell_back") else ""
+    if res["ok"]:
+        return True, f"{model} → {res['detail'][:40]}{suffix}"
+    return False, f"{res['detail'][:100]}{suffix}"
 
 
 def section_integrations(out: Out, state: dict) -> None:

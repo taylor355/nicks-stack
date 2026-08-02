@@ -189,3 +189,91 @@ providers:
     # they cannot answer a prompt.
     models:
       - qwen3:4b
+
+# ==========================================================================
+# Runtime profiles  (v1.0.3)
+# ==========================================================================
+# A one-shot validation call needs a model, a credential and nothing else. The
+# full runtime it was inheriting loads 12 MCP servers, 16 plugins, browser
+# tooling, memory and the whole toolset surface before it can answer "ok" —
+# and config.yaml declares MCP connect_timeouts up to 300s. That startup is
+# what the gateway pays ONCE and keeps warm; a cold one-shot paid it every
+# time (this is the v1.0.2 finding, now addressed at the source rather than
+# with a longer timeout).
+#
+# MECHANISM (verified in this repo, not assumed)
+#   Hermes' own layout for a named profile is ~/.hermes/profiles/<name>/, with
+#   the default profile living directly in ~/.hermes/ — documented in
+#   skills/autonomous-ai-agents/hermes-gateway-onboarding/SKILL.md:40-42.
+#   HERMES_PROFILE is the profile-name variable
+#   (local-packages/latitude-telemetry-hermes/.../config.py:86 reads
+#   `HERMES_PROFILE or "default"`). HERMES_HOME is the config root and is
+#   exported by files/gateway-run.sh, read by scripts/orgo_desktop/client.py
+#   and set by platform/bootstrap.sh.
+#
+#   So a profile is NOT a new code path: it is the SAME `hermes` startup
+#   pointed at a smaller config tree. Nothing here patches Hermes.
+#
+# The validation profile's config.yaml is DERIVED from the real one at build
+# time — never hand-written — so it cannot drift. It is rebuilt automatically
+# whenever the source config changes (a sha256 stamp is kept beside it).
+#
+# SAFETY: if the profile cannot be built, or a probe fails inside it for a
+# startup/config reason, the caller retries once on the full runtime and says
+# the profile was bypassed. A profile can make validation faster; it can never
+# make it fail.
+profiles:
+  # Which profile each kind of work runs in. Only unattended validation is
+  # moved; anything a person asked for keeps the full runtime.
+  use:
+    validation: validation     # provider doctor, route probe, jack doctor --providers
+    routing_run: gateway       # `nicks-stack-route run` — real work, real tools
+    gateway: gateway           # the supervised service — never derived
+
+  gateway:
+    display: Full runtime
+    kind: full
+    # The machine's real ~/.hermes. Nothing is derived, copied or rewritten.
+    description: >-
+      Everything: MCP servers, plugins, browser tooling, memory, skills and the
+      full toolset surface. This is what the supervised gateway and any
+      user-driven run must keep.
+
+  validation:
+    display: Validation runtime
+    kind: derived
+    # Relative to HERMES_HOME, matching Hermes' documented profile layout.
+    dir: profiles/validation
+    description: >-
+      The minimum that can perform inference: model, providers, provider
+      credentials. No MCP servers, no browser tooling, no long-lived
+      integrations, no memory writes.
+    include:
+      # Config blocks copied verbatim from the real config.yaml. Anything not
+      # listed here simply does not exist in the derived config.
+      blocks:
+        - model                 # default model + provider + base_url
+        - providers             # custom providers (gemini, ollama, …)
+        - prompt_caching
+        - approvals
+        - _config_version
+      # Provider plugins only. Computed from this file: every plugin whose
+      # name ends in `-provider`, plus any plugin named exactly like a
+      # provider this routing map addresses. Tool plugins are dropped.
+      plugins: providers-only
+      # No MCP server is carried over at all.
+      mcp_servers: false
+      # No toolsets — a validation probe calls no tools.
+      toolsets: []
+      # Only the credentials this routing map actually names, so a cold start
+      # resolves ~4 op:// references instead of 21.
+      secrets: routing-keys
+      # Memory/session machinery off: a probe must not write user state.
+      ephemeral: true
+    # Files linked in from the real profile so credentials and identity
+    # resolve normally. Linked, never copied — no secret is duplicated on disk.
+    link:
+      - .env
+      - .op.env
+      - auth.json
+      - SOUL.md

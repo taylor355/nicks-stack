@@ -16,11 +16,19 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.0.2
+version: 1.0.3
 released: 2026-08-02
 status: frozen
 description: >-
-  v1.0.2 fixes one runtime discrepancy and nothing else: every tool that
+  v1.0.3 adds runtime profiles. A one-shot validation call no longer starts the
+  gateway's full runtime: `validation` is a derived config tree (generated from
+  config.yaml, never hand-written) with no MCP servers, no browser tooling, no
+  long-lived integrations and only the provider credentials inference needs.
+  It is the SAME hermes startup pointed at a smaller config tree — HERMES_HOME
+  under ~/.hermes/profiles/, Hermes' own documented profile layout. The gateway
+  and any user-driven run keep the full runtime. A profile can make validation
+  faster; if it is unusable the call falls back to the full runtime and says so.
+  v1.0.2 fixed one runtime discrepancy and nothing else: every tool that
   spawned `hermes chat` did so with a bare environment and none of the
   gateway's launch flags, so it exercised a different runtime than production
   and hung. All hermes children now get the gateway's own initialisation
@@ -38,12 +46,12 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.0.2
-  bootstrap: 1.0.1
-  update: 1.0.0
-  verify: 1.0.2
-  routing: 1.0.2
-  doctor: 1.0.2
+  platform: 1.0.3
+  bootstrap: 1.0.3
+  update: 1.0.3
+  verify: 1.0.3
+  routing: 1.0.3
+  doctor: 1.0.3
   manifest: 1.0.1
 
 # Services this platform supervises. Supervisor is the init for services on

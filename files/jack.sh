@@ -10,6 +10,7 @@
 #   jack version                                platform + component versions
 #   jack manifest [show|write|report]           machine-readable manifest
 #   jack mode [show|set <mode>|run ...]         provider routing (nicks-stack-route)
+#   jack profiles [--json|--rebuild]            runtime profiles (v1.0.3)
 #   jack verify                                 full deployment verification
 #
 # Installed to /usr/local/bin/jack by platform/bootstrap.sh.
@@ -40,6 +41,11 @@ jack — Taylor AI Platform
 
   jack mode [show|modes|set <mode>|run <mode> -q "..."]
         Provider routing. Passes through to nicks-stack-route.
+
+  jack profiles [--json] [--rebuild]
+        Runtime profiles: what a validation one-shot loads versus what the
+        gateway loads. --rebuild regenerates the derived profile from the
+        current config.yaml (it also rebuilds itself whenever that changes).
 
   jack verify
         Full deployment verification (platform/verify.sh on the repo).
@@ -77,6 +83,51 @@ for key in ("bootstrap", "update", "verify", "routing", "doctor", "manifest"):
         print(f"v{versions[key]}")
         print()
 PY
+    ;;
+  profiles)
+    exec python3 - "$@" <<'PROFILES'
+import json, sys
+sys.path.insert(0, "/root/.hermes/scripts/platform")
+import lib
+
+args = sys.argv[1:]
+if "--rebuild" in args:
+    for name, spec in lib.profiles_spec().items():
+        if name == "use" or not isinstance(spec, dict) or spec.get("kind") == "full":
+            continue
+        res = lib.profile_ensure(name, force=True)
+        print(f"{name}: {res['reason']}" + (f"  -> {res['path']}" if res["path"] else ""))
+    print()
+
+report = lib.profile_report()
+if "--json" in args:
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    sys.exit(0)
+
+full = report.get("full_runtime") or {}
+use = report.get("use") or {}
+print("Runtime profiles\n")
+print(f"  {'profile':<12} {'mcp':>4} {'plugins':>8} {'op refs':>8}   state")
+for name, info in (report.get("profiles") or {}).items():
+    state = ("full runtime" if info.get("kind") == "full"
+             else ("built" if info.get("built") else "not built yet"))
+    print(f"  {name:<12} {info.get('mcp_servers', 0):>4} {info.get('plugins', 0):>8} "
+          f"{info.get('op_references', 0):>8}   {state}")
+print()
+for kind, name in use.items():
+    print(f"  {kind:<12} -> {name}")
+
+lean_name = use.get("validation")
+lean = (report.get("profiles") or {}).get(lean_name) or {}
+if lean and lean.get("kind") != "full":
+    print(f"\n  '{lean_name}' drops "
+          f"{full.get('mcp_servers', 0) - lean.get('mcp_servers', 0)} MCP server(s), "
+          f"{full.get('plugins', 0) - lean.get('plugins', 0)} plugin(s) and "
+          f"{full.get('op_references', 0) - lean.get('op_references', 0)} op:// reference(s)")
+    print(f"  provider plugins kept : {', '.join(lean.get('plugin_names') or []) or 'none'}")
+    print(f"  credentials kept      : {', '.join(lean.get('op_reference_names') or []) or 'none'}")
+    print(f"  path                  : {lean.get('path')}")
+PROFILES
     ;;
   manifest)
     sub="${1:-show}"

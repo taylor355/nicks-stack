@@ -12,7 +12,7 @@
 #   nicks-stack-provider-doctor                 # verify every provider
 #   nicks-stack-provider-doctor --provider gemini
 #   nicks-stack-provider-doctor --no-inference  # config + catalog only, no spend
-#   nicks-stack-provider-doctor --runtime       # gateway-vs-one-shot parity only
+#   nicks-stack-provider-doctor --runtime       # runtime parity + profiles, no spend
 #   nicks-stack-provider-doctor --json
 #
 # For each provider it does three things, in order, and stops at the first
@@ -34,6 +34,12 @@
 # present, --accept-hooks set, --max-turns bounded and stdin closed. Until
 # this change the doctor spawned `hermes chat` bare — a different runtime
 # than production — which is why it hung while the gateway kept working.
+#
+# v1.0.3 — RUNTIME PROFILES. The Hermes leg runs in the `validation` profile:
+# the same startup pointed at a derived config with no MCP servers, no browser
+# tooling and only the credentials routing names, so a probe stops paying for a
+# runtime it never uses. If that profile is unusable the call falls back to the
+# full runtime and says so — a profile can never make validation fail.
 #
 # SECRET SAFETY: key values are held in memory only. They are never printed,
 # never logged, and every vendor error string is scrubbed before display.
@@ -153,25 +159,23 @@ def hermes_infer(provider: str, model: str, timeout: int,
                  key_env: str | None = None) -> tuple[bool, str]:
     """One real completion through the Hermes runtime path.
 
-    v1.0.2: this now runs with the SAME runtime initialisation the supervised
-    gateway gets — the bridged environment from hermes_child_env() and the
-    gateway's own launch flags (--accept-hooks, a bounded --max-turns, stdin
-    closed). Before this it spawned `hermes chat` bare, which is a different
-    runtime than production and is what hung."""
-    cmd = platform_lib.hermes_chat_cmd(
-        PROBE_PROMPT, source="nicks-stack-provider-doctor",
-        model=model, provider=provider, max_turns=1,
+    v1.0.2 gave this the SAME runtime initialisation the supervised gateway
+    gets — the bridged environment plus the gateway's launch flags.
+
+    v1.0.3 runs it in the `validation` runtime profile: the same `hermes`
+    startup pointed at a derived config with no MCP servers, no browser
+    tooling and only the provider credentials, so a probe stops paying for a
+    runtime it never uses. If the profile is unusable the call falls back to
+    the full runtime and says so."""
+    res = platform_lib.hermes_probe(
+        PROBE_PROMPT, source="nicks-stack-provider-doctor", timeout=timeout,
+        model=model, provider=provider, key_env=key_env,
+        profile=platform_lib.profile_for("validation"), max_turns=1,
     )
-    try:
-        proc = platform_lib.hermes_run(
-            cmd, timeout, env=platform_lib.hermes_child_env(yolo=True))
-    except subprocess.TimeoutExpired:
-        return False, f"hermes timed out after {timeout}s — {runtime_hint(key_env)}"
-    except OSError as exc:
-        return False, f"hermes could not run: {exc}"
-    if proc.returncode == 0 and proc.stdout.strip():
-        return True, short(proc.stdout)
-    return False, short(proc.stderr or proc.stdout or f"exit {proc.returncode}")
+    detail = short(res["detail"])
+    if res.get("fell_back"):
+        detail = f"{detail} [ran on the full runtime]"
+    return res["ok"], detail
 
 
 def runtime_hint(key_env: str | None = None) -> str:
@@ -569,6 +573,8 @@ def cmd_runtime(args) -> int:
     sample = platform_lib.hermes_chat_cmd(
         PROBE_PROMPT, source="nicks-stack-provider-doctor",
         model="<model>", provider="<provider>", max_turns=1)
+    profiles = platform_lib.profile_report()
+    validation = platform_lib.profile_for("validation")
 
     if args.json:
         print(json.dumps({
@@ -581,8 +587,10 @@ def cmd_runtime(args) -> int:
             "bridged_keys": bridged,          # names only, never values
             "op_token_reachable": bool(env.get("OP_SERVICE_ACCOUNT_TOKEN")),
             "invocation": sample,
+            "profiles": profiles,
+            "validation_profile": validation,
             "findings": findings,
-        }, indent=2))
+        }, indent=2, ensure_ascii=False))
         return 0
 
     print("Hermes runtime parity\n")
@@ -593,6 +601,28 @@ def cmd_runtime(args) -> int:
           + (", …" if len(bridged) > 6 else "") + ")")
     print(f"  op token reachable: {'yes' if env.get('OP_SERVICE_ACCOUNT_TOKEN') else 'no'}")
     print(f"\n  child invocation : {' '.join(sample)}")
+
+    # Runtime profiles: what a validation one-shot actually loads, next to
+    # what the gateway loads.  (v1.0.3)
+    print("\nRuntime profiles")
+    full = profiles.get("full_runtime") or {}
+    for pname, info in (profiles.get("profiles") or {}).items():
+        marker = "*" if pname == validation else " "
+        state = ("full runtime" if info.get("kind") == "full"
+                 else ("built" if info.get("built") else "NOT BUILT"))
+        print(f"  {marker} {pname:<12} {info.get('mcp_servers', 0):>3} mcp  "
+              f"{info.get('plugins', 0):>3} plugins  "
+              f"{info.get('op_references', 0):>3} op refs   ({state})")
+    if validation:
+        lean = (profiles.get("profiles") or {}).get(validation) or {}
+        print(f"\n  validation runs in '{validation}': "
+              f"{full.get('mcp_servers', 0) - lean.get('mcp_servers', 0)} fewer MCP server(s), "
+              f"{full.get('plugins', 0) - lean.get('plugins', 0)} fewer plugin(s), "
+              f"{full.get('op_references', 0) - lean.get('op_references', 0)} fewer op:// reference(s)")
+        print(f"  path             : {lean.get('path', '—')}")
+    else:
+        print("\n  no validation profile declared — probes run on the full runtime")
+
     print("\nFindings")
     if findings:
         for f in findings:

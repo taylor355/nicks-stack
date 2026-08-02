@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.0.1"
+readonly SCRIPT_VERSION="1.0.3"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -1226,6 +1226,35 @@ if ((${#HEALTH_FAILURES[@]} > 0)); then
   for f in "${HEALTH_FAILURES[@]}"; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$f"; done
   err "bootstrap finished with failing health checks — review the log: $LOG_FILE"
   exit 1
+fi
+
+# ==========================================================================
+# Runtime profiles — rebuild the derived validation profile from the config
+# that was just installed, so the first `jack doctor --providers` after a
+# deploy already runs lean instead of building it on demand.  (v1.0.3)
+# ==========================================================================
+PLATFORM_LIB_SCRIPT="$HERMES_HOME/scripts/platform/lib.py"
+if [[ -f "$PLATFORM_LIB_SCRIPT" ]]; then
+  PROFILE_RESULT="$(python3 - "$PLATFORM_LIB_SCRIPT" <<'PROFILEBUILD'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+import lib
+for name, spec in lib.profiles_spec().items():
+    if name == "use" or not isinstance(spec, dict) or spec.get("kind") == "full":
+        continue
+    res = lib.profile_ensure(name, force=True)
+    print(f"{name}: {res['reason']}")
+PROFILEBUILD
+)" || PROFILE_RESULT=""
+  if [[ -n "$PROFILE_RESULT" ]]; then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && ok "runtime profile $line"
+    done <<< "$PROFILE_RESULT"
+  else
+    # A profile is an optimisation: probes still work without one.
+    info "no runtime profile built — validation will use the full runtime"
+  fi
 fi
 
 # ==========================================================================

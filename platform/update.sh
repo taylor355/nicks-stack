@@ -35,6 +35,14 @@
 #   /usr/local/bin/* launchers, desktop entries, wallpaper, supervisor conf,
 #   autostart entries.
 #
+# WHAT IS REGENERATED (derived, so neither preserved nor backed up)
+#   /root/.hermes/profiles/            runtime profiles (v1.0.3). Generated
+#                                      from config.yaml on every bootstrap run
+#                                      and whenever config.yaml changes, so
+#                                      they cannot drift from the runtime they
+#                                      are a subset of. Nothing here is user
+#                                      data; deleting the tree is harmless.
+#
 # EXIT CODES
 #   0  update applied (or dry run completed) and all checks passed
 #   1  update failed, or preserved data regressed, or verify.sh failed
@@ -46,7 +54,7 @@ IFS=$'\n\t'
 umask 022
 
 readonly SCRIPT_NAME="nicks-stack update"
-readonly SCRIPT_VERSION="1.0.0"          # Taylor AI Platform
+readonly SCRIPT_VERSION="1.0.3"          # Taylor AI Platform
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -61,6 +69,15 @@ readonly BACKUP_ROOT="${STACK_ROOT}/backups"
 # belongs to the user or the agent and must survive byte-for-byte.
 readonly MANAGED_TREES=(plugins skills scripts local-packages)
 readonly MANAGED_FILES=(config.yaml SOUL.md routing.yaml platform.yaml)
+
+# Derived, not user data: runtime profiles (v1.0.3) are GENERATED from
+# config.yaml, so their contents change whenever config.yaml legitimately
+# changes. Fingerprinting them as preserved data would report a false
+# "preserved data regressed" on any update that touches the config. They are
+# rebuilt by bootstrap.sh on every run, so nothing is lost by excluding them.
+# (Only the derived config.yaml and its stamp are real files here — the
+# credential entries in a profile are symlinks, which `find -type f` skips.)
+readonly DERIVED_TREES=(profiles)
 
 # Env-style files: bootstrap may APPEND default keys, so these are checked
 # key-by-key (no key may vanish, no existing value may change) rather than by
@@ -168,7 +185,8 @@ USAGE
 # --------------------------------------------------------------------------
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# is_managed_path <absolute-path> — true for files bootstrap.sh owns.
+# is_managed_path <absolute-path> — true for files bootstrap.sh owns, and for
+# generated trees that are rebuilt from those files rather than kept.
 is_managed_path() {
   local path="$1" rel name
   case "$path" in
@@ -178,7 +196,7 @@ is_managed_path() {
   for name in "${MANAGED_FILES[@]}"; do
     if [[ "$rel" == "$name" ]]; then return 0; fi
   done
-  for name in "${MANAGED_TREES[@]}"; do
+  for name in "${MANAGED_TREES[@]}" "${DERIVED_TREES[@]}"; do
     if [[ "$rel" == "$name/"* ]]; then return 0; fi
   done
   return 1

@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.0.2 — frozen.** From here the work is agent identity and company
+**Platform v1.0.3 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,69 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.0.3 — runtime profiles
+
+v1.0.2 established that a one-shot and the gateway must start the same way. The
+remaining cost was *what* that startup loads. A validation probe needs a model,
+a credential and nothing else, but it was building the gateway's entire runtime
+to say `ok`:
+
+| | Full runtime | `validation` profile |
+|---|---|---|
+| MCP servers | 13 declared (12 enabled, slowest `connect_timeout: 300`) | **0** |
+| Plugins | 16 (browser, web search, Spotify, Orgo desktop, telemetry, providers) | **5** — provider plugins only |
+| `op://` references resolved at start | 21 | **3** — only the keys routing names |
+| Memory / sessions / streaming | on | off |
+| Config size | ~11.6 KB | ~1.8 KB |
+
+**A profile is not a new code path.** Hermes' own layout for a named profile is
+`~/.hermes/profiles/<name>/`, with the default profile living directly in
+`~/.hermes/` (`skills/autonomous-ai-agents/hermes-gateway-onboarding/SKILL.md`),
+and `HERMES_PROFILE` is the profile-name variable
+(`local-packages/latitude-telemetry-hermes/.../config.py`). `HERMES_HOME` is the
+config root — exported by `gateway-run.sh`, set by `bootstrap.sh`, read by
+`scripts/orgo_desktop/client.py`. So a profile is the **same `hermes` startup
+pointed at a smaller config tree**. Nothing patches or wraps Hermes.
+
+The derived config is **generated from the machine's real `config.yaml`**, never
+hand-written, and rebuilt whenever that file changes (a sha256 stamp sits beside
+it). It cannot drift from the runtime it is a subset of. Which plugins and
+credentials survive is *computed* from `routing.yaml`, not hardcoded: every
+plugin ending in `-provider` plus any plugin named like a provider the routing
+map addresses, and every `key_env` the map names.
+
+Who runs where — declared in `routing.yaml` under `profiles.use`:
+
+| Work | Profile | Why |
+|---|---|---|
+| `nicks-stack-provider-doctor`, `jack doctor --providers`, `nicks-stack-route probe` | `validation` | unattended, calls no tools |
+| `nicks-stack-route run` | `gateway` (full) | real work needs real tools |
+| the supervised `hermes-gateway` service | `gateway` (full) | never derived, never touched |
+
+**A profile can make validation faster; it can never make it fail.** If it
+cannot be built, if `dir:` would resolve outside `HERMES_HOME`, or if a probe
+fails inside it for a startup/config reason, the call runs on the full runtime
+and says the profile was bypassed. A genuine credential or provider failure is
+*not* retried — that would just be a slower way to get the same answer.
+
+Inspect and rebuild:
+
+```bash
+sudo jack profiles              # what each profile loads, and the delta
+sudo jack profiles --json
+sudo jack profiles --rebuild    # force a regeneration now
+sudo nicks-stack-provider-doctor --runtime   # parity + profiles, spends nothing
+```
+
+`bootstrap.sh` rebuilds derived profiles on every run, so a fresh deploy is
+already lean. `update.sh` treats `~/.hermes/profiles/` as **regenerated**, not
+preserved — it is derived state, so it is excluded from the preserved-data
+integrity proof (otherwise any update that legitimately changes `config.yaml`
+would report a false "preserved data regressed").
+
+To disable profiles entirely, point `profiles.use.validation` at `gateway` in
+`routing.yaml` and redeploy — everything reverts to v1.0.2 behaviour.
 
 ### v1.0.2 — Hermes runtime parity (one bug, no redesign)
 
@@ -118,6 +181,7 @@ sudo jack doctor --json       # machine-readable
 sudo jack version             # platform + component versions
 sudo jack manifest show       # the machine-readable manifest
 sudo jack mode show           # current routing mode
+sudo jack profiles            # runtime profiles: validation vs gateway
 ```
 
 ## How future company deployments inherit this platform
@@ -642,7 +706,7 @@ only thing that should be trusted to say a provider works:
 sudo nicks-stack-provider-doctor                  # all providers, real inference
 sudo nicks-stack-provider-doctor --provider gemini
 sudo nicks-stack-provider-doctor --no-inference   # credential + catalog only, no spend
-sudo nicks-stack-provider-doctor --runtime        # gateway-vs-one-shot parity only
+sudo nicks-stack-provider-doctor --runtime        # gateway-vs-one-shot parity + profiles
 sudo nicks-stack-provider-doctor --json
 ```
 
@@ -816,6 +880,9 @@ sudo supervisorctl reread && sudo supervisorctl update
 | Model calls fail with an auth error | Key present but wrong or unfunded | `sudo -i hermes -z "Reply with exactly: ok"` and read the error; check the key in 1Password |
 | `hermes chat` times out but the gateway keeps working | A cold one-shot is not getting the gateway's runtime: no bridged `.env`, no 1Password token, or a hook prompt with no TTY | `sudo nicks-stack-provider-doctor --runtime` names the cause. Fixed for all platform tools in v1.0.2 — if you still see it from a hand-rolled call, source both env files and pass `--accept-hooks` |
 | `--runtime`: "1Password map is ENABLED … but no OP_SERVICE_ACCOUNT_TOKEN is reachable" | `config.yaml` has 21 `op://` references and `op read` has no token, so it prompts on `/dev/tty` once per reference | Write the token to `/root/.hermes/.op.env` (mode 600) and restart the gateway — do not raise the timeout |
+| A probe reports "[ran on the full runtime]" or "[full runtime]" | The `validation` profile could not be built or failed at startup, so the call fell back | `sudo jack profiles` shows the reason; `sudo jack profiles --rebuild` regenerates it. Validation still works meanwhile — this is a performance notice, not a failure |
+| `jack profiles` shows validation with the same counts as gateway | `profiles.use.validation` points at `gateway`, or `routing.yaml` has no `profiles:` block | Set `profiles.use.validation: validation` in `routing.yaml` and redeploy |
+| `verify.sh`: "declares dir=… which is not inside /root/.hermes" | A `profiles.<name>.dir` in `routing.yaml` escapes `HERMES_HOME` | Make it relative and inside `HERMES_HOME`, e.g. `profiles/validation` |
 | `/mode` does nothing in Telegram | The `provider-routing` skill is not deployed, or the CLI symlink is missing | `sudo bash platform/verify.sh` → section 7; redeploy with `platform/update.sh` |
 | `nicks-stack-route run deep` exits 3 | By design — premium routes need explicit consent | Re-run with `--confirm` after the user agrees |
 | `nicks-stack-route run local` exits 4 | By design — Ollama is not installed | Use `fast`/`smart`, or wait for the Ollama sprint |

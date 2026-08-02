@@ -11,6 +11,8 @@
 # Shell callers:    python3 lib.py detect --json      (the whole picture)
 #                   python3 lib.py ollama --json
 #                   python3 lib.py versions --json
+#                   python3 lib.py runtime             (gateway-vs-one-shot parity)
+#                   python3 lib.py profiles            (runtime profiles, v1.0.3)
 #
 # SECRET SAFETY: credential *presence* is detected and reported; a value is
 # only ever returned by resolve_key_value(), which no reporting path calls.
@@ -238,7 +240,8 @@ def parse_env_file(path: Path | str) -> dict:
     return out
 
 
-def hermes_child_env(extra: dict | None = None, yolo: bool = False) -> dict:
+def hermes_child_env(extra: dict | None = None, yolo: bool = False,
+                     profile: str | None = None) -> dict:
     """The environment `hermes` must be given, built exactly as the supervised
     gateway builds its own.
 
@@ -253,7 +256,13 @@ def hermes_child_env(extra: dict | None = None, yolo: bool = False) -> dict:
 
     yolo=True sets HERMES_YOLO_MODE=1, the bridge's non-interactive setting.
     Only the validation paths (probes) pass it; a user-driven `route run`
-    keeps the normal approval behaviour."""
+    keeps the normal approval behaviour.
+
+    profile selects a runtime profile (v1.0.3). It only ever repoints
+    HERMES_HOME at a smaller config tree under ~/.hermes/profiles/<name>/ —
+    the same `hermes` startup, less to load. A full profile, an unknown name
+    or a profile that could not be built all fall back to the real
+    HERMES_HOME, so a profile can never break a call."""
     env = dict(os.environ)
     env["HOME"] = str(HERMES_HOME.parent)
     env["HERMES_HOME"] = str(HERMES_HOME)
@@ -265,9 +274,291 @@ def hermes_child_env(extra: dict | None = None, yolo: bool = False) -> dict:
         env["OP_SERVICE_ACCOUNT_TOKEN"] = token
     if yolo:
         env.setdefault("HERMES_YOLO_MODE", "1")
+    if profile:
+        built = profile_ensure(profile)
+        if built.get("path"):
+            # HERMES_HOME is the config root (gateway-run.sh exports it,
+            # bootstrap.sh sets it, scripts/orgo_desktop/client.py reads it),
+            # so pointing it at the profile directory IS the existing startup
+            # path — nothing new is executed. HERMES_PROFILE is set alongside
+            # it as the name label Hermes' own tooling reads.
+            env["HERMES_HOME"] = built["path"]
+            env["HERMES_PROFILE"] = profile
     if extra:
         env.update({k: str(v) for k, v in extra.items()})
     return env
+
+
+# ==========================================================================
+# Runtime profiles  (v1.0.3)
+# ==========================================================================
+# A profile is a smaller config tree that the SAME `hermes` startup is pointed
+# at. It is declared in routing.yaml (profiles:) and, for a derived profile,
+# generated from the machine's real config.yaml — never hand-written — so it
+# cannot drift from the runtime it is a subset of.
+#
+# Layout follows Hermes' own convention: ~/.hermes/profiles/<name>/, with the
+# default profile living directly in ~/.hermes/
+# (skills/autonomous-ai-agents/hermes-gateway-onboarding/SKILL.md:40-42).
+#
+# Nothing here patches, wraps or reimplements Hermes. The only lever used is
+# which directory HERMES_HOME points at.
+# ==========================================================================
+PROFILES_DIR = HERMES_HOME / "profiles"
+PROFILE_STAMP = ".derived-from.sha256"
+
+# Blocks that would start something long-lived or stateful. Never carried into
+# a derived profile even if a future config nests them somewhere new.
+_NEVER_IN_DERIVED = ("mcp_servers", "plugins", "secrets", "platform_toolsets",
+                     "known_plugin_toolsets", "memory", "browser", "skills",
+                     "delegation", "image_gen", "stt", "code_execution",
+                     "hooks_auto_accept", "session_reset")
+
+
+def profiles_spec(routing: dict | None = None) -> dict:
+    """The profiles: block from routing.yaml, or {} when none is declared."""
+    routing = routing if routing is not None else load_yaml(ROUTING_FILE)
+    spec = routing.get("profiles")
+    return spec if isinstance(spec, dict) else {}
+
+
+def profile_for(kind: str, routing: dict | None = None) -> str | None:
+    """Which profile a kind of work runs in ('validation', 'routing_run',
+    'gateway'). Returns None when profiles are not declared, which means
+    'use the full runtime' — the pre-v1.0.3 behaviour."""
+    spec = profiles_spec(routing)
+    name = (spec.get("use") or {}).get(kind)
+    if not name or name not in spec:
+        return None
+    if (spec[name] or {}).get("kind") == "full":
+        return None          # 'full' is the real HERMES_HOME; nothing to build
+    return name
+
+
+def _routing_key_envs(cfg: dict, routing: dict) -> set:
+    """Every credential name this routing map actually addresses. Trimming the
+    1Password map to these is the single biggest cold-start saving: 21 op://
+    references become the handful inference needs."""
+    keys = set()
+    for block in ("providers", "modes"):
+        for spec in (routing.get(block) or {}).values():
+            if (spec or {}).get("key_env"):
+                keys.add(spec["key_env"])
+    for spec in (routing.get("providers") or {}).values():
+        # A custom provider declared in config.yaml carries its own key_env.
+        name = ((spec or {}).get("provider") or "").replace("custom:", "")
+        cfg_provider = (cfg.get("providers") or {}).get(name) or {}
+        if cfg_provider.get("key_env"):
+            keys.add(cfg_provider["key_env"])
+    return keys
+
+
+def _provider_plugins(cfg: dict, routing: dict) -> list:
+    """Provider plugins only. Computed, not hardcoded: every enabled plugin
+    whose name ends in `-provider`, plus any enabled plugin named exactly like
+    a provider this routing map addresses. Tool plugins (browser, web, spotify,
+    orgo-desktop-local, telemetry) are dropped."""
+    enabled = (cfg.get("plugins") or {}).get("enabled") or []
+    wanted = set()
+    for spec in (routing.get("providers") or {}).values():
+        p = ((spec or {}).get("provider") or "")
+        if p and not p.startswith("custom:"):
+            wanted.add(p)
+    for spec in (routing.get("modes") or {}).values():
+        p = ((spec or {}).get("provider") or "")
+        if p and not p.startswith("custom:"):
+            wanted.add(p)
+    return [p for p in enabled if p.endswith("-provider") or p in wanted]
+
+
+def derive_profile_config(cfg: dict, routing: dict, spec: dict) -> dict:
+    """Build the derived config dict for a profile. Pure function of the real
+    config + the routing map, so `jack profiles --diff` can show exactly what
+    was dropped and why."""
+    include = (spec or {}).get("include") or {}
+    out: dict = {}
+
+    for block in include.get("blocks") or []:
+        if block in _NEVER_IN_DERIVED:
+            continue                      # declaration cannot override safety
+        if block in cfg:
+            out[block] = cfg[block]
+
+    if include.get("plugins") == "providers-only":
+        keep = _provider_plugins(cfg, routing)
+        out["plugins"] = {"enabled": keep,
+                          "disabled": (cfg.get("plugins") or {}).get("disabled") or []}
+    if include.get("mcp_servers") is False:
+        out["mcp_servers"] = {}
+
+    toolsets = include.get("toolsets")
+    if isinstance(toolsets, list):
+        # Every surface gets the same (empty) toolset list: a probe calls no
+        # tools, so none need to be constructed at start.
+        out["platform_toolsets"] = {s: list(toolsets)
+                                    for s in (cfg.get("platform_toolsets") or {"cli": []})}
+
+    if include.get("secrets") == "routing-keys":
+        op = ((cfg.get("secrets") or {}).get("onepassword") or {})
+        wanted = _routing_key_envs(cfg, routing)
+        trimmed = {k: v for k, v in (op.get("env") or {}).items() if k in wanted}
+        keep = {k: v for k, v in op.items() if k != "env"}
+        keep["env"] = trimmed
+        out["secrets"] = {"onepassword": keep}
+
+    if include.get("ephemeral"):
+        # No memory writes, no session reset machinery, no onboarding prompts.
+        out["memory"] = {"memory_enabled": False, "user_profile_enabled": False}
+        out["onboarding"] = (cfg.get("onboarding") or {})
+        out["streaming"] = {"enabled": False}
+
+    return out
+
+
+def profile_paths(name: str, spec: dict | None = None) -> Path | None:
+    """Where a profile's config tree lives. `dir` is declared in routing.yaml
+    and is always relative to HERMES_HOME; a value that would resolve outside
+    HERMES_HOME is rejected rather than followed, so a typo cannot make the
+    platform write a config tree somewhere unexpected."""
+    spec = spec if spec is not None else profiles_spec().get(name) or {}
+    rel = spec.get("dir") or f"profiles/{name}"
+    if os.path.isabs(rel):
+        return None
+    path = (HERMES_HOME / rel).resolve()
+    home = HERMES_HOME.resolve()
+    if path == home or home not in path.parents:
+        return None
+    return path
+
+
+def profile_ensure(name: str, force: bool = False) -> dict:
+    """Create or refresh a derived profile, and return what happened.
+
+    Rebuilds whenever the source config.yaml changes (a sha256 of the derived
+    content is stamped beside it), so the profile can never describe a runtime
+    the machine no longer has. Returns {'path': None, ...} for anything that
+    should run on the full runtime — the caller then simply uses HERMES_HOME."""
+    import hashlib
+
+    result = {"profile": name, "path": None, "built": False, "reason": ""}
+    routing = load_yaml(ROUTING_FILE)
+    spec = profiles_spec(routing).get(name) or {}
+    if not spec:
+        result["reason"] = f"no profile '{name}' declared in {ROUTING_FILE.name}"
+        return result
+    if spec.get("kind") == "full":
+        result["reason"] = "full runtime — nothing to derive"
+        return result
+
+    cfg = load_yaml(CONFIG_FILE)
+    if not cfg:
+        result["reason"] = f"{CONFIG_FILE} unreadable — falling back to the full runtime"
+        return result
+
+    derived = derive_profile_config(cfg, routing, spec)
+    body = yaml.safe_dump(derived, default_flow_style=False, sort_keys=False,
+                          allow_unicode=True, width=1000)
+    digest = hashlib.sha256(body.encode()).hexdigest()
+
+    path = profile_paths(name, spec)
+    if path is None:
+        result["reason"] = (f"profile '{name}' declares dir='{spec.get('dir')}', which is not "
+                            f"inside {HERMES_HOME} — refusing to build it")
+        return result
+    stamp = path / PROFILE_STAMP
+    try:
+        if not force and stamp.is_file() and stamp.read_text().strip() == digest \
+                and (path / "config.yaml").is_file():
+            result.update(path=str(path), reason="up to date")
+            _profile_link(path, spec)      # links are cheap; keep them correct
+            return result
+
+        path.mkdir(parents=True, exist_ok=True)
+        # The tree sits inside HERMES_HOME (0700) and links to secret files;
+        # keep it just as closed as the directory it derives from.
+        os.chmod(path.parent, 0o700)
+        os.chmod(path, 0o700)
+        tmp = path / "config.yaml.tmp"
+        tmp.write_text(body)
+        os.chmod(tmp, 0o600)
+        tmp.replace(path / "config.yaml")
+        _profile_link(path, spec)
+        stamp.write_text(digest + "\n")
+        os.chmod(stamp, 0o600)
+        result.update(path=str(path), built=True, reason="rebuilt from config.yaml")
+        return result
+    except OSError as exc:
+        # A profile is an optimisation. If it cannot be written, say so and
+        # let the caller run on the full runtime.
+        result["reason"] = f"could not build profile: {exc}"
+        result["path"] = None
+        return result
+
+
+def _profile_link(path: Path, spec: dict) -> None:
+    """Symlink credentials and identity in from the real profile. Linked, not
+    copied — no secret is duplicated on disk, and permissions stay the
+    originals'."""
+    for rel in spec.get("link") or []:
+        src, dst = HERMES_HOME / rel, path / rel
+        try:
+            if not src.exists():
+                if dst.is_symlink() and not dst.exists():
+                    dst.unlink()          # source went away; drop the dangling link
+                continue
+            if dst.is_symlink():
+                if os.readlink(dst) == str(src):
+                    continue
+                dst.unlink()
+            elif dst.exists():
+                continue                  # a real file here was put there deliberately
+            dst.symlink_to(src)
+        except OSError:
+            continue                      # a missing link is not fatal
+
+
+def profile_report(name: str | None = None) -> dict:
+    """What each declared profile is and what the derived one drops. Names and
+    counts only — no secret value is read or emitted."""
+    routing = load_yaml(ROUTING_FILE)
+    cfg = load_yaml(CONFIG_FILE)
+    spec_all = profiles_spec(routing)
+    full_mcp = len(cfg.get("mcp_servers") or {})
+    full_plugins = len((cfg.get("plugins") or {}).get("enabled") or [])
+    full_refs = len(((cfg.get("secrets") or {}).get("onepassword") or {}).get("env") or {})
+
+    out = {
+        "declared": sorted(k for k in spec_all if k != "use"),
+        "use": spec_all.get("use") or {},
+        "full_runtime": {"mcp_servers": full_mcp, "plugins": full_plugins,
+                         "op_references": full_refs},
+        "profiles": {},
+    }
+    for pname, spec in spec_all.items():
+        if pname == "use" or not isinstance(spec, dict):
+            continue
+        entry = {"kind": spec.get("kind"), "display": spec.get("display", pname)}
+        if spec.get("kind") == "full":
+            entry.update(mcp_servers=full_mcp, plugins=full_plugins,
+                         op_references=full_refs, path=str(HERMES_HOME))
+        else:
+            derived = derive_profile_config(cfg, routing, spec)
+            path = profile_paths(pname, spec)
+            entry.update(
+                mcp_servers=len(derived.get("mcp_servers") or {}),
+                plugins=len((derived.get("plugins") or {}).get("enabled") or []),
+                plugin_names=(derived.get("plugins") or {}).get("enabled") or [],
+                op_references=len(((derived.get("secrets") or {})
+                                   .get("onepassword") or {}).get("env") or {}),
+                op_reference_names=sorted(((derived.get("secrets") or {})
+                                           .get("onepassword") or {}).get("env") or {}),
+                path=str(path) if path else "(rejected: outside HERMES_HOME)",
+                built=bool(path and (path / "config.yaml").is_file()),
+            )
+        out["profiles"][pname] = entry
+    if name:
+        return out["profiles"].get(name, {})
+    return out
 
 
 def hermes_chat_cmd(prompt: str, *, source: str, model: str | None = None,
@@ -306,6 +597,66 @@ def hermes_run(cmd: list[str], timeout: int, env: dict | None = None):
                           env=env if env is not None else hermes_child_env())
 
 
+# Startup/config failures — the signatures that mean "the profile is the
+# problem", as opposed to a genuine provider or credential failure. Only these
+# trigger the one retry on the full runtime.
+_PROFILE_BAILOUT = ("config", "no such file", "not found", "unknown provider",
+                    "no provider", "missing", "cannot open", "traceback",
+                    "unsupported", "invalid configuration")
+
+
+def hermes_probe(prompt: str, *, source: str, timeout: int,
+                 model: str | None = None, provider: str | None = None,
+                 profile: str | None = None, key_env: str | None = None,
+                 max_turns: int | None = 1) -> dict:
+    """One unattended completion, in a runtime profile when one is declared.
+
+    This is the single entry point every validation path uses, so the profile
+    policy, the fallback and the diagnosis live in exactly one place.
+
+    A profile is an optimisation and is treated as one: if the probe fails for
+    a startup/config reason, it is retried once on the full runtime and the
+    result says the profile was bypassed. A profile can make validation
+    faster; it can never make it fail.
+
+    Returns {ok, detail, profile, fell_back, timed_out}."""
+    cmd = hermes_chat_cmd(prompt, source=source, model=model,
+                          provider=provider, max_turns=max_turns)
+
+    def attempt(prof: str | None) -> dict:
+        try:
+            proc = hermes_run(cmd, timeout, env=hermes_child_env(yolo=True, profile=prof))
+        except subprocess.TimeoutExpired:
+            findings = hermes_runtime_diagnose(key_env)
+            hint = f" — {findings[0]}" if findings else ""
+            return {"ok": False, "detail": f"hermes timed out after {timeout}s{hint}",
+                    "timed_out": True}
+        except OSError as exc:
+            return {"ok": False, "detail": f"hermes could not run: {exc}", "timed_out": False}
+        if proc.returncode == 0 and proc.stdout.strip():
+            return {"ok": True, "detail": scrub(proc.stdout), "timed_out": False}
+        return {"ok": False, "timed_out": False,
+                "detail": scrub(proc.stderr or proc.stdout or f"exit {proc.returncode}")}
+
+    first = attempt(profile)
+    first.update(profile=profile or "gateway", fell_back=False)
+    if first["ok"] or not profile:
+        return first
+
+    blob = (first["detail"] or "").lower()
+    if first.get("timed_out") or any(w in blob for w in _PROFILE_BAILOUT):
+        second = attempt(None)
+        if second["ok"]:
+            second.update(profile="gateway", fell_back=True,
+                          detail=f"{second['detail']}  [profile '{profile}' bypassed: "
+                                 f"{first['detail'][:80]}]")
+            return second
+        # Both failed — report the full-runtime failure, which is the real one.
+        second.update(profile="gateway", fell_back=True)
+        return second
+    return first
+
+
 def hermes_runtime_diagnose(key_env: str | None = None) -> list[str]:
     """Why a fresh `hermes chat` may stall where the long-running gateway does
     not. Returns human-readable findings, most-likely cause first. Presence
@@ -335,10 +686,20 @@ def hermes_runtime_diagnose(key_env: str | None = None) -> list[str]:
                 f"is not installed — every reference fails slowly at start"
             )
         else:
-            findings.append(
-                f"1Password map enabled, {refs} references, token and `op` present — "
-                f"a cold start still pays one `op read` per unresolved reference"
-            )
+            # A validation profile trims the map to the credentials inference
+            # actually needs, so say what a probe really pays.  (v1.0.3)
+            prof = profile_for("validation")
+            lean = (profile_report(prof) or {}).get("op_references") if prof else None
+            if lean is not None and lean < refs:
+                findings.append(
+                    f"1Password map enabled, token and `op` present — the full runtime "
+                    f"resolves {refs} references, validation profile '{prof}' resolves {lean}"
+                )
+            else:
+                findings.append(
+                    f"1Password map enabled, {refs} references, token and `op` present — "
+                    f"a cold start still pays one `op read` per unresolved reference"
+                )
 
     # 2. Credentials: a key that only exists in the map costs a cold start an
     #    op round-trip; one already in .env costs nothing.
@@ -352,17 +713,34 @@ def hermes_runtime_diagnose(key_env: str | None = None) -> list[str]:
             )
 
     # 3. Cold start cost: a fresh `hermes chat` boots the whole MCP/plugin
-    #    stack; the gateway paid that once and keeps it warm.
+    #    stack; the gateway paid that once and keeps it warm. A validation
+    #    profile is what removes this, so report whether one is in use.
     mcp = cfg.get("mcp_servers") or cfg.get("mcpServers") or {}
     enabled = [n for n, s in mcp.items() if isinstance(s, dict) and s.get("enabled", True)]
     timeouts = [float(s.get("connect_timeout", 0) or 0)
                 for s in mcp.values() if isinstance(s, dict)]
     if enabled:
-        findings.append(
-            f"{len(enabled)} MCP server(s) are enabled; the slowest declares "
-            f"connect_timeout={max(timeouts or [0]):.0f}s — a cold `hermes chat` pays "
-            f"that startup, the running gateway does not"
-        )
+        prof = profile_for("validation")
+        if prof:
+            built = profile_ensure(prof)
+            if built.get("path"):
+                findings.append(
+                    f"the full runtime enables {len(enabled)} MCP server(s) (slowest "
+                    f"connect_timeout={max(timeouts or [0]):.0f}s), but validation runs in "
+                    f"profile '{prof}' with none of them — this is not the stall"
+                )
+            else:
+                findings.append(
+                    f"validation profile '{prof}' is NOT usable ({built.get('reason')}), so "
+                    f"probes fall back to the full runtime: {len(enabled)} MCP server(s), "
+                    f"slowest connect_timeout={max(timeouts or [0]):.0f}s"
+                )
+        else:
+            findings.append(
+                f"{len(enabled)} MCP server(s) are enabled and no validation profile is "
+                f"declared; the slowest declares connect_timeout={max(timeouts or [0]):.0f}s — "
+                f"a cold `hermes chat` pays that startup, the running gateway does not"
+            )
 
     # 4. The gateway itself: if it is up, the runtime is fine and the
     #    difference really is the cold start, not the configuration.
@@ -832,6 +1210,8 @@ def runtime_report() -> dict:
     bridged = sorted(parse_env_file(HERMES_ENV))
     cfg = load_yaml(CONFIG_FILE)
     op = (cfg.get("secrets") or {}).get("onepassword") or {}
+    validation = profile_for("validation")
+    built = profile_ensure(validation) if validation else {"reason": "none declared"}
     return {
         "hermes_on_path": have("hermes"),
         "root_env_present": ROOT_ENV.is_file(),
@@ -844,6 +1224,9 @@ def runtime_report() -> dict:
         "bridged_keys": bridged,
         "bridged_key_count": len(bridged),
         "accept_hooks": True,
+        "validation_profile": validation,
+        "validation_profile_usable": bool(built.get("path")),
+        "validation_profile_reason": built.get("reason", ""),
         "findings": hermes_runtime_diagnose(),
     }
 
@@ -877,6 +1260,7 @@ def main() -> int:
         "versions": versions_detect,
         "git": git_commit,
         "runtime": runtime_report,
+        "profiles": profile_report,
     }
     if what not in table:
         print(f"unknown query '{what}' — one of: {', '.join(table)}", file=sys.stderr)

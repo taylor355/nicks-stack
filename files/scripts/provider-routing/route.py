@@ -270,18 +270,24 @@ def build_cmd(mode: dict, prompt: str, toolsets: str | None,
 
 
 def run_oneshot(mode: dict, prompt: str, toolsets: str | None, timeout: int,
-                max_turns: int | None = None, yolo: bool = False) -> tuple[int, str, str]:
+                max_turns: int | None = None, yolo: bool = False,
+                profile: str | None = None) -> tuple[int, str, str]:
     """Run a one-shot with the gateway's own runtime initialisation.
 
     v1.0.2: previously this spawned `hermes chat` with whatever environment the
     caller happened to have — no ~/.hermes/.env, no 1Password token — so it ran
     a different runtime than the supervised gateway and stalled. yolo is left
     off for user-driven runs so tool approval behaves normally; only the
-    unattended probe path turns it on."""
+    unattended probe path turns it on.
+
+    v1.0.3: `profile` selects a runtime profile. `run` deliberately passes
+    none — real work needs the full runtime, tools included. Only `probe`
+    (unattended liveness, no tools) runs lean."""
     cmd = build_cmd(mode, prompt, toolsets, max_turns)
     try:
         proc = platform_lib.hermes_run(
-            cmd, timeout, env=platform_lib.hermes_child_env(yolo=yolo))
+            cmd, timeout,
+            env=platform_lib.hermes_child_env(yolo=yolo, profile=profile))
     except FileNotFoundError:
         return 127, "", "hermes CLI not found on PATH"
     except subprocess.TimeoutExpired:
@@ -486,10 +492,12 @@ def cmd_probe(cfg: dict, args) -> int:
             print(f"{name:<6} UNAVAILABLE  {info['detail']}")
             failures += 1
             continue
-        # Unattended liveness call: bound the turn and use the bridge's
-        # non-interactive setting, so a probe can never sit waiting.
+        # Unattended liveness call: bound the turn, use the bridge's
+        # non-interactive setting so a probe can never sit waiting, and run in
+        # the lean validation profile — a probe calls no tools.  (v1.0.3)
         rc, out, errs = run_oneshot(mode, PROBE_PROMPT, None, args.timeout,
-                                    max_turns=1, yolo=True)
+                                    max_turns=1, yolo=True,
+                                    profile=platform_lib.profile_for("validation"))
         target = f"{mode.get('provider')}/{mode.get('model')}"
         if rc == 0 and "ok" in out.lower():
             print(f"{name:<6} ok           {target}")

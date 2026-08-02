@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.0.2"
+readonly SCRIPT_VERSION="1.0.3"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -505,7 +505,7 @@ if [[ -r "$ROUTING_FILE" ]]; then
 fi
 
 # ==========================================================================
-section "8. Hermes runtime parity (gateway vs one-shot — no model calls)"
+section "8. Hermes runtime parity and profiles (no model calls)"
 # ==========================================================================
 # The gateway is a warm, long-lived process launched by hermes-gateway-run.sh,
 # which bridges /root/.env and ~/.hermes/.env into its environment and passes
@@ -544,6 +544,42 @@ else
     fi
   else
     note "1Password map disabled — keys resolve from .env only (no op prompt risk)"
+  fi
+
+  # Runtime profiles (v1.0.3): a validation one-shot should not be building
+  # the gateway's MCP/plugin/browser stack just to answer "ok".
+  PROFILE_JSON="$(python3 "$PLATFORM_LIB" profiles 2>/dev/null || true)"
+  if [[ -z "$PROFILE_JSON" ]]; then
+    warn "runtime profiles could not be evaluated"
+  else
+    VAL_PROFILE="$(printf '%s' "$RUNTIME_JSON" | sed -n 's/.*"validation_profile"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    if [[ -z "$VAL_PROFILE" || "$VAL_PROFILE" == "null" ]]; then
+      warn "no validation runtime profile declared — one-shot validation loads the full runtime"
+    elif [[ "$(json_bool validation_profile_usable)" == "true" ]]; then
+      pass "validation runs in the '$VAL_PROFILE' profile (lean runtime)"
+      # Prove it is actually leaner than the gateway, from the same report.
+      PROFILE_DELTA="$(python3 - "$PROFILE_JSON" "$VAL_PROFILE" <<'PROFILECHECK'
+import json, sys
+rep = json.loads(sys.argv[1]); name = sys.argv[2]
+full = rep.get("full_runtime") or {}
+lean = (rep.get("profiles") or {}).get(name) or {}
+for label, key in (("MCP servers", "mcp_servers"), ("plugins", "plugins"),
+                   ("op:// references", "op_references")):
+    f, l = full.get(key, 0), lean.get(key, 0)
+    verdict = "PASS" if l < f else "WARN"
+    print(f"{verdict}|{label}: {f} in the full runtime -> {l} in '{name}'")
+PROFILECHECK
+)"
+      while IFS='|' read -r verdict message; do
+        [[ -n "$message" ]] || continue
+        case "$verdict" in
+          PASS) pass "$message" ;;
+          *)    warn "$message" ;;
+        esac
+      done <<< "$PROFILE_DELTA"
+    else
+      warn "validation profile '$VAL_PROFILE' is not usable — probes fall back to the full runtime"
+    fi
   fi
 
   # Anything else the shared diagnosis flagged, verbatim.
