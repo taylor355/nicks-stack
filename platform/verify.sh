@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.0.1"
+readonly SCRIPT_VERSION="1.0.2"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -505,7 +505,58 @@ if [[ -r "$ROUTING_FILE" ]]; then
 fi
 
 # ==========================================================================
-section "8. Services"
+section "8. Hermes runtime parity (gateway vs one-shot — no model calls)"
+# ==========================================================================
+# The gateway is a warm, long-lived process launched by hermes-gateway-run.sh,
+# which bridges /root/.env and ~/.hermes/.env into its environment and passes
+# --accept-hooks. Every one-shot `hermes chat` is a COLD start that must be
+# given the same runtime initialisation, or it stalls where the gateway does
+# not. This section proves the inputs to that parity exist. Names and booleans
+# only — no secret value is read.  (v1.0.2)
+RUNTIME_JSON="$(python3 "$PLATFORM_LIB" runtime 2>/dev/null || true)"
+if [[ -z "$RUNTIME_JSON" ]]; then
+  fail "runtime parity could not be evaluated (platform library not runnable)"
+else
+  json_bool() { printf '%s' "$RUNTIME_JSON" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" | head -1; }
+  json_num()  { printf '%s' "$RUNTIME_JSON" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" | head -1; }
+
+  check_critical "hermes reachable from a non-interactive shell" have hermes
+  if [[ "$(json_bool hermes_env_present)" == "true" ]]; then
+    pass "$HERMES_HOME/.env present — keys can be bridged into a one-shot"
+  else
+    fail "$HERMES_HOME/.env missing — a one-shot hermes gets no provider keys"
+  fi
+  BRIDGED="$(json_num bridged_key_count)"
+  note "keys bridged into a one-shot: ${BRIDGED:-0} (names only, never values)"
+
+  if [[ "$(json_bool op_enabled)" == "true" ]]; then
+    OP_REFS="$(json_num op_references)"
+    if [[ "$(json_bool op_token_reachable)" == "true" ]]; then
+      pass "1Password enabled (${OP_REFS:-0} refs) and the service-account token is reachable"
+      if [[ "$(json_bool op_binary)" == "true" ]]; then
+        pass "op binary present — references resolve without prompting"
+      else
+        fail "1Password map enabled but the op binary is missing — every hermes start stalls"
+      fi
+    else
+      # This is the exact condition that makes `op read` prompt on /dev/tty.
+      fail "1Password map enabled (${OP_REFS:-0} refs) but no OP_SERVICE_ACCOUNT_TOKEN is reachable — every cold hermes start will stall on /dev/tty"
+    fi
+  else
+    note "1Password map disabled — keys resolve from .env only (no op prompt risk)"
+  fi
+
+  # Anything else the shared diagnosis flagged, verbatim.
+  printf '%s' "$RUNTIME_JSON" \
+    | sed -n '/"findings"/,/\]/p' \
+    | sed -n 's/^[[:space:]]*"\(.*\)",\?$/\1/p' \
+    | while IFS= read -r finding; do
+        [[ -n "$finding" ]] && note "$finding"
+      done
+fi
+
+# ==========================================================================
+section "9. Services"
 # ==========================================================================
 SUPERVISOR_UP=0
 if have supervisorctl && supervisorctl status >/dev/null 2>&1; then
@@ -548,7 +599,7 @@ else
 fi
 
 # ==========================================================================
-section "9. Local AI (Ollama)"
+section "10. Local AI (Ollama)"
 # ==========================================================================
 # Ollama is optional: the stack runs fine without it. These checks are
 # CRITICAL only when the machine is configured for local AI (a supervised
@@ -631,7 +682,7 @@ for want in qwen3 nomic-embed-text; do
 done
 
 # ==========================================================================
-section "10. Onboarding state (informational)"
+section "11. Onboarding state (informational)"
 # ==========================================================================
 if [[ -s "$HERMES_HOME/auth.json" ]]; then
   pass "model account connected (auth.json present)"
@@ -651,7 +702,7 @@ else
 fi
 
 # ==========================================================================
-section "11. User data inventory (must survive every update)"
+section "12. User data inventory (must survive every update)"
 # ==========================================================================
 note "vault notes        : $(count_files "$VAULT_DIR") file(s) in $VAULT_DIR"
 note "memories           : $(count_files "$HERMES_HOME/memories") file(s)"

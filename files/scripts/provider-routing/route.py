@@ -256,27 +256,38 @@ def mode_availability(cfg: dict, name: str) -> dict:
 # --------------------------------------------------------------------------
 # Execution
 # --------------------------------------------------------------------------
-def build_cmd(mode: dict, prompt: str, toolsets: str | None) -> list[str]:
-    """Exactly the invocation shape the AgentPhone bridge uses in production."""
-    cmd = ["hermes", "chat", "-Q", "--source", SOURCE_TAG]
-    if mode.get("model"):
-        cmd += ["-m", str(mode["model"])]
-    if mode.get("provider"):
-        cmd += ["--provider", str(mode["provider"])]
-    cmd += ["-q", prompt]
-    if toolsets:
-        cmd += ["-t", toolsets]
-    return cmd
+def build_cmd(mode: dict, prompt: str, toolsets: str | None,
+              max_turns: int | None = None) -> list[str]:
+    """Exactly the invocation shape the AgentPhone bridge uses in production —
+    built by the shared library so this and the provider doctor can never drift
+    apart again. --accept-hooks is what keeps an unattended run from blocking
+    on a hook approval prompt (v1.0.2)."""
+    return platform_lib.hermes_chat_cmd(
+        prompt, source=SOURCE_TAG,
+        model=mode.get("model"), provider=mode.get("provider"),
+        toolsets=toolsets, max_turns=max_turns,
+    )
 
 
-def run_oneshot(mode: dict, prompt: str, toolsets: str | None, timeout: int) -> tuple[int, str, str]:
-    cmd = build_cmd(mode, prompt, toolsets)
+def run_oneshot(mode: dict, prompt: str, toolsets: str | None, timeout: int,
+                max_turns: int | None = None, yolo: bool = False) -> tuple[int, str, str]:
+    """Run a one-shot with the gateway's own runtime initialisation.
+
+    v1.0.2: previously this spawned `hermes chat` with whatever environment the
+    caller happened to have — no ~/.hermes/.env, no 1Password token — so it ran
+    a different runtime than the supervised gateway and stalled. yolo is left
+    off for user-driven runs so tool approval behaves normally; only the
+    unattended probe path turns it on."""
+    cmd = build_cmd(mode, prompt, toolsets, max_turns)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = platform_lib.hermes_run(
+            cmd, timeout, env=platform_lib.hermes_child_env(yolo=yolo))
     except FileNotFoundError:
         return 127, "", "hermes CLI not found on PATH"
     except subprocess.TimeoutExpired:
-        return 124, "", f"timed out after {timeout}s"
+        findings = platform_lib.hermes_runtime_diagnose(mode.get("key_env"))
+        hint = f" — {findings[0]}" if findings else ""
+        return 124, "", f"timed out after {timeout}s{hint}"
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
@@ -475,7 +486,10 @@ def cmd_probe(cfg: dict, args) -> int:
             print(f"{name:<6} UNAVAILABLE  {info['detail']}")
             failures += 1
             continue
-        rc, out, errs = run_oneshot(mode, PROBE_PROMPT, None, args.timeout)
+        # Unattended liveness call: bound the turn and use the bridge's
+        # non-interactive setting, so a probe can never sit waiting.
+        rc, out, errs = run_oneshot(mode, PROBE_PROMPT, None, args.timeout,
+                                    max_turns=1, yolo=True)
         target = f"{mode.get('provider')}/{mode.get('model')}"
         if rc == 0 and "ok" in out.lower():
             print(f"{name:<6} ok           {target}")

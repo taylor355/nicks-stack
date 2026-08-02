@@ -177,10 +177,15 @@ def _probe_provider(name: str, info: dict, state: dict, timeout: int) -> tuple[b
     if not lib.have("hermes"):
         return False, "hermes CLI not installed — cannot exercise the runtime path"
     import subprocess
-    cmd = ["hermes", "chat", "-Q", "--source", "jack-doctor",
-           "-m", model, "--provider", info["provider"], "-q", PROBE_PROMPT]
+    # Same runtime initialisation the supervised gateway gets — bridged env,
+    # 1Password token, --accept-hooks, bounded turn, stdin closed.  (v1.0.2)
+    cmd = lib.hermes_chat_cmd(PROBE_PROMPT, source="jack-doctor", model=model,
+                              provider=info["provider"], max_turns=1)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = lib.hermes_run(cmd, timeout, env=lib.hermes_child_env(yolo=True))
+    except subprocess.TimeoutExpired:
+        findings = lib.hermes_runtime_diagnose((info.get("credential") or {}).get("key"))
+        return False, f"timed out after {timeout}s" + (f" — {findings[0]}" if findings else "")
     except (OSError, subprocess.SubprocessError) as exc:
         return False, lib.scrub(str(exc))[:80]
     if proc.returncode == 0 and proc.stdout.strip():
@@ -254,7 +259,9 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--quiet", action="store_true", help="warnings and verdict only")
     ap.add_argument("--no-color", action="store_true")
-    ap.add_argument("--timeout", type=int, default=90)
+    # 120s, not 90: a cold `hermes chat` boots the whole MCP/plugin stack
+    # before it emits anything, where the running gateway is already warm.
+    ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--repo", default=None)
     args = ap.parse_args()
 

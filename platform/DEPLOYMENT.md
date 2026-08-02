@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.0.1 — frozen.** From here the work is agent identity and company
+**Platform v1.0.2 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -18,6 +18,66 @@ golden image.
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
 
+### v1.0.2 — Hermes runtime parity (one bug, no redesign)
+
+Symptom: Anthropic, OpenRouter and Gemini credentials all validated, all three
+catalogs were reachable, Gemini's direct API answered and Ollama served
+locally — yet **every** failure was a `hermes chat` timeout, while the
+supervised gateway kept working normally.
+
+Cause: the gateway and the one-shot were not running the same runtime.
+`hermes-gateway-run.sh` exports `HOME`/`HERMES_HOME`/`PATH`, sources
+`/root/.env` and `~/.hermes/.env` with `set -a` ("it does NOT auto-export
+either file"), and launches with `--accept-hooks`. The AgentPhone bridge — the
+production one-shot caller — does the same thing in Python (`env.update(...)`
+from `~/.hermes/.env`, `HERMES_YOLO_MODE=1`, `--max-turns`, a 900s ceiling).
+The provider doctor, the routing CLI and `jack doctor` did none of it: they
+called `subprocess.run(["hermes", "chat", ...])` with whatever environment they
+happened to inherit and no launch flags. Three consequences, any one of which
+is enough to hang a probe:
+
+| Delta | Gateway / bridge | Doctor + router before v1.0.2 | Consequence |
+|---|---|---|---|
+| Environment | both `.env` files bridged in | bare inherited env | no provider key in the child; Hermes falls back to resolving all 21 `op://` references at start |
+| 1Password token | reachable in the process that resolved the map | absent | `op read` prompts on `/dev/tty` — the documented ~30s-per-reference stall |
+| Launch flags | `--accept-hooks` (gateway), `--max-turns` (bridge) | neither | a hook approval prompt blocks on a TTY that isn't there; an unbounded agentic turn runs past any short ceiling |
+
+And the reason the gateway "continues to function": it is a **warm, long-lived
+process**. It paid secret resolution and MCP/plugin startup once at boot — and
+`config.yaml` declares MCP servers with `connect_timeout` up to 300s. Every
+`hermes chat` is a **cold start** that pays all of it again. A 30s ceiling
+could not survive that even on a perfectly configured machine.
+
+Fix — one shared helper, no routing or provider changes:
+
+| Change | Where |
+|---|---|
+| `hermes_child_env()` builds the child environment exactly as `gateway-run.sh` does (`.env` files parsed, never executed; `OP_SERVICE_ACCOUNT_TOKEN` from `.op.env`; `HOME`/`HERMES_HOME`/`PATH`) | `scripts/platform/lib.py` |
+| `hermes_chat_cmd()` is now the single place the one-shot invocation is built — `--accept-hooks` always, `--max-turns` where the caller is unattended | `scripts/platform/lib.py` |
+| `hermes_run()` closes stdin, so nothing can block on a terminal that isn't there | `scripts/platform/lib.py` |
+| `hermes_runtime_diagnose()` names the specific cause instead of a bare "timed out" | `scripts/platform/lib.py` |
+| provider doctor, routing CLI and `jack doctor` all spawn hermes through those helpers | `provider-routing/doctor.py`, `provider-routing/route.py`, `platform/doctor.py` |
+| per-check ceiling raised 30s → 120s (cold start is real; the bridge allows 900s) | provider doctor, `jack doctor` |
+| verify.sh section 8 proves the parity inputs exist, and fails when the 1Password map is enabled with no reachable token | `platform/verify.sh` |
+
+Inspect the parity on a machine without spending anything:
+
+```bash
+sudo nicks-stack-provider-doctor --runtime          # human-readable
+sudo nicks-stack-provider-doctor --runtime --json   # machine-readable
+```
+
+It reports key **names** only — no secret value is read, resolved or printed.
+
+If it says the 1Password map is enabled but no token is reachable, that is the
+stall, and the fix is the token, not the timeout:
+
+```bash
+sudo sh -c 'umask 077; echo "OP_SERVICE_ACCOUNT_TOKEN=ops_..." > /root/.hermes/.op.env'
+sudo supervisorctl restart hermes-gateway
+sudo nicks-stack-provider-doctor --runtime
+```
+
 ### v1.0.1 — validation bug fixes (no behaviour redesign)
 
 Found during real validation on the Orgo VM and fixed:
@@ -27,7 +87,7 @@ Found during real validation on the Orgo VM and fixed:
 | 1 | `jack doctor` reported `unknown on unknown` for git | repo is discovered, then branch/commit read from it |
 | 2 | Hardcoded repo paths | `/opt/nicks-stack`, `/root/nicks-stack`, `$HOME/nicks-stack`, `$NICKS_STACK_REPO`, the manifest's recorded path, or the git root |
 | 3 | Manual `ollama serve` fought the supervised service | bootstrap stops it (TERM, then KILL) before Supervisor takes the port |
-| 4 | provider-doctor could hang | 30s per-check ceiling + a wall-clock guard; a hung provider no longer stalls the rest |
+| 4 | provider-doctor could hang | per-check ceiling + a wall-clock guard; a hung provider no longer stalls the rest (ceiling raised to 120s in v1.0.2) |
 | 5 | Native Gemini failure blocked validation | Gemini is `required: false`; reported separately, exit code unaffected, models still reachable via OpenRouter |
 | 6 | Stale Anthropic aliases (`claude-haiku-4-5`) | modes declare a **tier** (haiku/sonnet/opus); the id resolves live from `GET /v1/models`, cached 24h, pinned id is the offline fallback |
 | 7 | Opaque failures | every failure carries `cause` (credential / network / model-id / hermes-config / provider-error) and a `fix` line |
@@ -582,6 +642,7 @@ only thing that should be trusted to say a provider works:
 sudo nicks-stack-provider-doctor                  # all providers, real inference
 sudo nicks-stack-provider-doctor --provider gemini
 sudo nicks-stack-provider-doctor --no-inference   # credential + catalog only, no spend
+sudo nicks-stack-provider-doctor --runtime        # gateway-vs-one-shot parity only
 sudo nicks-stack-provider-doctor --json
 ```
 
@@ -716,7 +777,7 @@ sudo tail -50 /var/log/orgo/ollama.err.log    # why it will not start
 ### Verification
 
 ```bash
-sudo bash platform/verify.sh                  # section 9 = Local AI (Ollama)
+sudo bash platform/verify.sh                  # section 10 = Local AI (Ollama)
 sudo nicks-stack-provider-doctor --provider ollama
 sudo nicks-stack-route run local -q "Summarise: the quarterly renewal is due."
 ```
@@ -753,6 +814,8 @@ sudo supervisorctl reread && sudo supervisorctl update
 | `bootstrap.sh`: "another bootstrap is already running" | A stale lock, or a genuine concurrent run | Check with `ps aux \| grep bootstrap.sh`; if none, remove the lock file named in the error |
 | Update reports "preserved data regressed" | Something removed or changed a preserved file during the run | Do not re-run. Read `preserved-after.sha256` vs `preserved-before.sha256` in the rollback point to see exactly which file, then restore it from the backup |
 | Model calls fail with an auth error | Key present but wrong or unfunded | `sudo -i hermes -z "Reply with exactly: ok"` and read the error; check the key in 1Password |
+| `hermes chat` times out but the gateway keeps working | A cold one-shot is not getting the gateway's runtime: no bridged `.env`, no 1Password token, or a hook prompt with no TTY | `sudo nicks-stack-provider-doctor --runtime` names the cause. Fixed for all platform tools in v1.0.2 — if you still see it from a hand-rolled call, source both env files and pass `--accept-hooks` |
+| `--runtime`: "1Password map is ENABLED … but no OP_SERVICE_ACCOUNT_TOKEN is reachable" | `config.yaml` has 21 `op://` references and `op read` has no token, so it prompts on `/dev/tty` once per reference | Write the token to `/root/.hermes/.op.env` (mode 600) and restart the gateway — do not raise the timeout |
 | `/mode` does nothing in Telegram | The `provider-routing` skill is not deployed, or the CLI symlink is missing | `sudo bash platform/verify.sh` → section 7; redeploy with `platform/update.sh` |
 | `nicks-stack-route run deep` exits 3 | By design — premium routes need explicit consent | Re-run with `--confirm` after the user agrees |
 | `nicks-stack-route run local` exits 4 | By design — Ollama is not installed | Use `fast`/`smart`, or wait for the Ollama sprint |

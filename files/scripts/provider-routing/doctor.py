@@ -12,6 +12,7 @@
 #   nicks-stack-provider-doctor                 # verify every provider
 #   nicks-stack-provider-doctor --provider gemini
 #   nicks-stack-provider-doctor --no-inference  # config + catalog only, no spend
+#   nicks-stack-provider-doctor --runtime       # gateway-vs-one-shot parity only
 #   nicks-stack-provider-doctor --json
 #
 # For each provider it does three things, in order, and stops at the first
@@ -26,6 +27,13 @@
 #   3. inference    — one real, minimal completion. Through the Hermes CLI
 #                     when it is available, so the runtime path itself is
 #                     exercised; otherwise straight to the vendor API.
+#
+# v1.0.2 — RUNTIME PARITY. The Hermes leg now runs with the same runtime
+# initialisation the supervised gateway gets (lib.hermes_child_env() +
+# lib.hermes_chat_cmd()): both env files bridged in, the 1Password token
+# present, --accept-hooks set, --max-turns bounded and stdin closed. Until
+# this change the doctor spawned `hermes chat` bare — a different runtime
+# than production — which is why it hung while the gateway kept working.
 #
 # SECRET SAFETY: key values are held in memory only. They are never printed,
 # never logged, and every vendor error string is scrubbed before display.
@@ -64,7 +72,14 @@ HERMES_ENV = Path(os.environ.get("NICKS_STACK_ENV", "/root/.hermes/.env"))
 OP_ENV = Path(os.environ.get("NICKS_STACK_OP_ENV", "/root/.hermes/.op.env"))
 
 PROBE_PROMPT = "Reply with exactly: ok"
-DEFAULT_TIMEOUT = 30   # per-check ceiling (v1.0.1 bug 4)
+
+# Per-check ceiling (v1.0.1 bug 4). Raised from 30s in v1.0.2: a cold
+# `hermes chat` boots the whole MCP/plugin stack before it says anything, and
+# config.yaml declares MCP servers with connect_timeout up to 300s. The
+# long-running gateway pays that once at start and then stays warm, which is
+# exactly why it kept working while every 30s one-shot "timed out". The
+# AgentPhone bridge — the production one-shot caller — allows 900s.
+DEFAULT_TIMEOUT = 120
 
 # Anything that looks like a credential is scrubbed before anything is printed.
 SECRET_PATTERNS = [
@@ -134,22 +149,35 @@ def hermes_available() -> bool:
     return shutil.which("hermes") is not None
 
 
-def hermes_infer(provider: str, model: str, timeout: int) -> tuple[bool, str]:
-    """One real completion through the Hermes runtime path — the same flags the
-    AgentPhone bridge uses in production."""
-    cmd = [
-        "hermes", "chat", "-Q", "--source", "nicks-stack-provider-doctor",
-        "-m", model, "--provider", provider, "-q", PROBE_PROMPT,
-    ]
+def hermes_infer(provider: str, model: str, timeout: int,
+                 key_env: str | None = None) -> tuple[bool, str]:
+    """One real completion through the Hermes runtime path.
+
+    v1.0.2: this now runs with the SAME runtime initialisation the supervised
+    gateway gets — the bridged environment from hermes_child_env() and the
+    gateway's own launch flags (--accept-hooks, a bounded --max-turns, stdin
+    closed). Before this it spawned `hermes chat` bare, which is a different
+    runtime than production and is what hung."""
+    cmd = platform_lib.hermes_chat_cmd(
+        PROBE_PROMPT, source="nicks-stack-provider-doctor",
+        model=model, provider=provider, max_turns=1,
+    )
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = platform_lib.hermes_run(
+            cmd, timeout, env=platform_lib.hermes_child_env(yolo=True))
     except subprocess.TimeoutExpired:
-        return False, f"hermes timed out after {timeout}s"
+        return False, f"hermes timed out after {timeout}s — {runtime_hint(key_env)}"
     except OSError as exc:
         return False, f"hermes could not run: {exc}"
     if proc.returncode == 0 and proc.stdout.strip():
         return True, short(proc.stdout)
     return False, short(proc.stderr or proc.stdout or f"exit {proc.returncode}")
+
+
+def runtime_hint(key_env: str | None = None) -> str:
+    """The most likely reason a cold `hermes chat` stalled, in one line."""
+    findings = platform_lib.hermes_runtime_diagnose(key_env)
+    return findings[0] if findings else "no runtime discrepancy detected"
 
 
 def guarded(fn, res: "Result", timeout: int):
@@ -266,7 +294,7 @@ def check_anthropic(spec: dict, args) -> Result:
 
     model = res.checked_model or (res.models[0] if res.models else "")
     if hermes_available():
-        ok, detail = hermes_infer("anthropic", model, args.timeout)
+        ok, detail = hermes_infer("anthropic", model, args.timeout, spec.get("key_env"))
         res.inference_via = "hermes chat --provider anthropic"
     else:
         status, body, err = http_json(
@@ -316,7 +344,8 @@ def check_openrouter(spec: dict, args) -> Result:
         return res
 
     if hermes_available():
-        ok, detail = hermes_infer(spec.get("provider", "openrouter"), chosen, args.timeout)
+        ok, detail = hermes_infer(spec.get("provider", "openrouter"), chosen,
+                                  args.timeout, spec.get("key_env"))
         res.inference_via = f"hermes chat --provider {spec.get('provider', 'openrouter')}"
     else:
         status, body, err = http_json(
@@ -380,7 +409,7 @@ def check_gemini(spec: dict, args) -> Result:
 
     provider = spec.get("provider", "custom:gemini")
     if hermes_available():
-        ok, detail = hermes_infer(provider, chosen, args.timeout)
+        ok, detail = hermes_infer(provider, chosen, args.timeout, spec.get("key_env"))
         res.inference_via = f"hermes chat --provider {provider}"
         if not ok:
             # Hermes route not usable — prove the key and model still work
@@ -468,7 +497,7 @@ def check_ollama(spec: dict, args) -> Result:
 
     provider = spec.get("provider", "custom:ollama")
     if hermes_available():
-        ok, detail = hermes_infer(provider, chosen, args.timeout)
+        ok, detail = hermes_infer(provider, chosen, args.timeout, spec.get("key_env"))
         res.inference_via = f"hermes chat --provider {provider}"
     else:
         ok = False
@@ -528,6 +557,52 @@ def routing_state(routing: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Runtime parity  (v1.0.2)
+# --------------------------------------------------------------------------
+def cmd_runtime(args) -> int:
+    """Explain the difference between the long-running gateway's runtime and a
+    fresh `hermes chat`, on THIS machine. Presence only — no secret value is
+    read or printed, and no provider is called."""
+    env = platform_lib.hermes_child_env()
+    findings = platform_lib.hermes_runtime_diagnose()
+    bridged = sorted(k for k in platform_lib.parse_env_file(platform_lib.HERMES_ENV))
+    sample = platform_lib.hermes_chat_cmd(
+        PROBE_PROMPT, source="nicks-stack-provider-doctor",
+        model="<model>", provider="<provider>", max_turns=1)
+
+    if args.json:
+        print(json.dumps({
+            "hermes_on_path": hermes_available(),
+            "env_files": {
+                str(platform_lib.ROOT_ENV): platform_lib.ROOT_ENV.exists(),
+                str(platform_lib.HERMES_ENV): platform_lib.HERMES_ENV.exists(),
+                str(platform_lib.OP_ENV): platform_lib.OP_ENV.exists(),
+            },
+            "bridged_keys": bridged,          # names only, never values
+            "op_token_reachable": bool(env.get("OP_SERVICE_ACCOUNT_TOKEN")),
+            "invocation": sample,
+            "findings": findings,
+        }, indent=2))
+        return 0
+
+    print("Hermes runtime parity\n")
+    print(f"  hermes on PATH   : {'yes' if hermes_available() else 'NO'}")
+    for path in (platform_lib.ROOT_ENV, platform_lib.HERMES_ENV, platform_lib.OP_ENV):
+        print(f"  {str(path):<17}: {'present' if path.exists() else 'absent'}")
+    print(f"  keys bridged in  : {len(bridged)} ({', '.join(bridged[:6])}"
+          + (", …" if len(bridged) > 6 else "") + ")")
+    print(f"  op token reachable: {'yes' if env.get('OP_SERVICE_ACCOUNT_TOKEN') else 'no'}")
+    print(f"\n  child invocation : {' '.join(sample)}")
+    print("\nFindings")
+    if findings:
+        for f in findings:
+            print(f"  - {f}")
+    else:
+        print("  - no runtime discrepancy detected")
+    return 0
+
+
+# --------------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="nicks-stack-provider-doctor",
@@ -539,10 +614,16 @@ def main() -> int:
                     help="credential + catalog only — makes no billable call")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
-                    help="per-check ceiling in seconds (default 30)")
+                    help=f"per-check ceiling in seconds (default {DEFAULT_TIMEOUT})")
     ap.add_argument("--refresh-models", action="store_true",
                     help="re-query the Anthropic catalog instead of the 24h cache")
+    ap.add_argument("--runtime", action="store_true",
+                    help="report how a fresh `hermes chat` differs from the running "
+                         "gateway, and exit (no provider calls, no spend)")
     args = ap.parse_args()
+
+    if args.runtime:
+        return cmd_runtime(args)
 
     routing = load_yaml(ROUTING_FILE)
     if not routing:

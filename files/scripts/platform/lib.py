@@ -178,6 +178,210 @@ def key_presence(key_env: str) -> dict:
     return {"key": key_env, "present": False, "source": "unresolved"}
 
 
+# ==========================================================================
+# Hermes runtime  (v1.0.2)
+# ==========================================================================
+# Every tool that spawns `hermes` must hand it the SAME runtime initialisation
+# the supervised gateway gets. Before v1.0.2 the routing CLI and the provider
+# doctor spawned `hermes chat` with a bare inherited environment and none of
+# the gateway's launch flags, so they exercised a different runtime than the
+# one production actually uses — and hung.
+#
+# The two references, both already in this repo:
+#
+#   gateway-run.sh          export HOME/HERMES_HOME/PATH, then
+#                           `set -a; . /root/.env; . ~/.hermes/.env; set +a`,
+#                           then `hermes gateway run --replace --accept-hooks`
+#   agentphone_bridge.py    env = os.environ | <parsed ~/.hermes/.env>,
+#                           HERMES_YOLO_MODE=1,
+#                           `hermes chat -Q --source … --max-turns N -q …`
+#
+# hermes_child_env() reproduces the first; hermes_chat_cmd() reproduces the
+# second. Nothing here reads or prints a secret value: the .env files are
+# parsed into the child's environment and never inspected further.
+# ==========================================================================
+ROOT_ENV = Path(os.environ.get("NICKS_STACK_ROOT_ENV", "/root/.env"))
+
+# Identical to the PATH gateway-run.sh exports, so `hermes` and its helpers
+# resolve the same way under supervisor, ssh and cron.
+HERMES_PATH = "/usr/local/bin:/root/.local/bin:/root/.hermes/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def parse_env_file(path: Path | str) -> dict:
+    """KEY=VALUE pairs from a shell env file, WITHOUT executing it.
+
+    Equivalent to `set -a; . file; set +a` for the plain assignments these
+    files contain, minus the arbitrary-code-execution that sourcing implies.
+    Values are returned for the caller to put in a child environment; no
+    caller logs them."""
+    out: dict[str, str] = {}
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        out[key] = val
+    return out
+
+
+def hermes_child_env(extra: dict | None = None, yolo: bool = False) -> dict:
+    """The environment `hermes` must be given, built exactly as the supervised
+    gateway builds its own.
+
+    Layering order matches gateway-run.sh literally: HOME/HERMES_HOME/PATH
+    first, then /root/.env, then ~/.hermes/.env (a sourced file wins over the
+    inherited value, which is what `set -a; . file` does).
+
+    OP_SERVICE_ACCOUNT_TOKEN is added from ~/.hermes/.op.env when present.
+    Without it, an enabled 1Password map makes `op read` prompt on /dev/tty —
+    which is the documented ~30s-per-reference stall (config.yaml, secrets
+    block) and, with 21 mapped references, a hang no 30s timeout survives.
+
+    yolo=True sets HERMES_YOLO_MODE=1, the bridge's non-interactive setting.
+    Only the validation paths (probes) pass it; a user-driven `route run`
+    keeps the normal approval behaviour."""
+    env = dict(os.environ)
+    env["HOME"] = str(HERMES_HOME.parent)
+    env["HERMES_HOME"] = str(HERMES_HOME)
+    env["PATH"] = HERMES_PATH + ":" + os.environ.get("PATH", "")
+    env.update(parse_env_file(ROOT_ENV))
+    env.update(parse_env_file(HERMES_ENV))
+    token = op_token()
+    if token:
+        env["OP_SERVICE_ACCOUNT_TOKEN"] = token
+    if yolo:
+        env.setdefault("HERMES_YOLO_MODE", "1")
+    if extra:
+        env.update({k: str(v) for k, v in extra.items()})
+    return env
+
+
+def hermes_chat_cmd(prompt: str, *, source: str, model: str | None = None,
+                    provider: str | None = None, toolsets: str | None = None,
+                    max_turns: int | None = None,
+                    accept_hooks: bool = True) -> list[str]:
+    """The one-shot invocation shape this platform actually runs in production.
+
+    `--accept-hooks` is not optional for an unattended caller: without it a
+    plugin/hook approval prompt blocks on a TTY that a supervised or piped
+    process does not have. gateway-run.sh passes it for the same reason
+    ("plugins/hooks never prompt"), and the documented working one-shot
+    (skills/observability/latitude-agent-review) passes it too.
+
+    `--max-turns` bounds an agentic turn; the bridge always sets it."""
+    cmd = ["hermes", "chat", "-Q", "--source", source]
+    if accept_hooks:
+        cmd.append("--accept-hooks")
+    if max_turns:
+        cmd += ["--max-turns", str(max_turns)]
+    if model:
+        cmd += ["-m", str(model)]
+    if provider:
+        cmd += ["--provider", str(provider)]
+    cmd += ["-q", prompt]
+    if toolsets:
+        cmd += ["-t", toolsets]
+    return cmd
+
+
+def hermes_run(cmd: list[str], timeout: int, env: dict | None = None):
+    """subprocess.run for a hermes child, with stdin closed so nothing can
+    block waiting on a terminal that isn't there."""
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                          check=False, stdin=subprocess.DEVNULL,
+                          env=env if env is not None else hermes_child_env())
+
+
+def hermes_runtime_diagnose(key_env: str | None = None) -> list[str]:
+    """Why a fresh `hermes chat` may stall where the long-running gateway does
+    not. Returns human-readable findings, most-likely cause first. Presence
+    only — no secret value is read, resolved or printed."""
+    findings: list[str] = []
+    cfg = load_yaml(CONFIG_FILE)
+    env = hermes_child_env()
+
+    if not have("hermes"):
+        findings.append("hermes is not on PATH for this process")
+        return findings
+
+    # 1. 1Password: an enabled map with no token prompts on /dev/tty, once per
+    #    reference. This is the single largest cold-start stall.
+    op = (cfg.get("secrets") or {}).get("onepassword") or {}
+    refs = len(op.get("env") or {})
+    if op.get("enabled"):
+        if not env.get("OP_SERVICE_ACCOUNT_TOKEN"):
+            findings.append(
+                f"1Password map is ENABLED with {refs} references but no "
+                f"OP_SERVICE_ACCOUNT_TOKEN is reachable ({OP_ENV} missing or empty) — "
+                f"`op read` then prompts on /dev/tty and every hermes start stalls"
+            )
+        elif not have("op"):
+            findings.append(
+                f"1Password map is ENABLED with {refs} references but the `op` binary "
+                f"is not installed — every reference fails slowly at start"
+            )
+        else:
+            findings.append(
+                f"1Password map enabled, {refs} references, token and `op` present — "
+                f"a cold start still pays one `op read` per unresolved reference"
+            )
+
+    # 2. Credentials: a key that only exists in the map costs a cold start an
+    #    op round-trip; one already in .env costs nothing.
+    if key_env:
+        if env.get(key_env):
+            findings.append(f"{key_env} is present in the child environment (from .env)")
+        else:
+            findings.append(
+                f"{key_env} is NOT in the child environment — hermes must resolve it "
+                f"through the 1Password map at start"
+            )
+
+    # 3. Cold start cost: a fresh `hermes chat` boots the whole MCP/plugin
+    #    stack; the gateway paid that once and keeps it warm.
+    mcp = cfg.get("mcp_servers") or cfg.get("mcpServers") or {}
+    enabled = [n for n, s in mcp.items() if isinstance(s, dict) and s.get("enabled", True)]
+    timeouts = [float(s.get("connect_timeout", 0) or 0)
+                for s in mcp.values() if isinstance(s, dict)]
+    if enabled:
+        findings.append(
+            f"{len(enabled)} MCP server(s) are enabled; the slowest declares "
+            f"connect_timeout={max(timeouts or [0]):.0f}s — a cold `hermes chat` pays "
+            f"that startup, the running gateway does not"
+        )
+
+    # 4. The gateway itself: if it is up, the runtime is fine and the
+    #    difference really is the cold start, not the configuration.
+    gw = supervisor_status().get("hermes-gateway") or {}
+    if gw.get("state") == "RUNNING":
+        findings.append(
+            "hermes-gateway is RUNNING — the same config.yaml works in a warm "
+            "process, so the failure is specific to cold one-shot startup"
+        )
+    elif gw:
+        findings.append(f"hermes-gateway is {gw.get('state')} — fix the service first")
+
+    if not HERMES_ENV.exists():
+        findings.append(f"{HERMES_ENV} does not exist — no keys can be bridged into hermes")
+    if not (cfg.get("model") or {}).get("default"):
+        findings.append(f"{CONFIG_FILE} declares no model.default")
+    return findings
+
+
 # --------------------------------------------------------------------------
 # Services (Supervisor is this platform's init for services, not systemd)
 # --------------------------------------------------------------------------
@@ -621,6 +825,29 @@ def detect_all(repo: Path | str | None = None) -> dict:
     }
 
 
+def runtime_report() -> dict:
+    """Gateway-vs-one-shot runtime parity, for shell callers (verify.sh).
+    Key NAMES only — no value is read, resolved or emitted.  (v1.0.2)"""
+    env = hermes_child_env()
+    bridged = sorted(parse_env_file(HERMES_ENV))
+    cfg = load_yaml(CONFIG_FILE)
+    op = (cfg.get("secrets") or {}).get("onepassword") or {}
+    return {
+        "hermes_on_path": have("hermes"),
+        "root_env_present": ROOT_ENV.is_file(),
+        "hermes_env_present": HERMES_ENV.is_file(),
+        "op_env_present": OP_ENV.is_file(),
+        "op_enabled": bool(op.get("enabled")),
+        "op_references": len(op.get("env") or {}),
+        "op_token_reachable": bool(env.get("OP_SERVICE_ACCOUNT_TOKEN")),
+        "op_binary": have("op"),
+        "bridged_keys": bridged,
+        "bridged_key_count": len(bridged),
+        "accept_hooks": True,
+        "findings": hermes_runtime_diagnose(),
+    }
+
+
 def _os_pretty() -> str:
     try:
         for line in Path("/etc/os-release").read_text().splitlines():
@@ -649,11 +876,14 @@ def main() -> int:
         "identity": identity_detect,
         "versions": versions_detect,
         "git": git_commit,
+        "runtime": runtime_report,
     }
     if what not in table:
         print(f"unknown query '{what}' — one of: {', '.join(table)}", file=sys.stderr)
         return 2
-    print(json.dumps(table[what](), indent=2, default=str))
+    # ensure_ascii=False: shell callers print these strings verbatim, and
+    # \uXXXX escapes would leak into verify.sh's output.
+    print(json.dumps(table[what](), indent=2, default=str, ensure_ascii=False))
     return 0
 
 

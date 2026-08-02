@@ -16,11 +16,17 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.0.1
+version: 1.0.2
 released: 2026-08-02
 status: frozen
 description: >-
-  v1.0.1 fixes only the implementation bugs found during real validation on the
+  v1.0.2 fixes one runtime discrepancy and nothing else: every tool that
+  spawned `hermes chat` did so with a bare environment and none of the
+  gateway's launch flags, so it exercised a different runtime than production
+  and hung. All hermes children now get the gateway's own initialisation
+  (bridged .env files, 1Password token, --accept-hooks, bounded --max-turns,
+  stdin closed) via one shared helper. Routing and providers are unchanged.
+  v1.0.1 fixed only the implementation bugs found during real validation on the
   Orgo VM: git/repo discovery, Ollama takeover, provider-doctor timeouts,
   optional native Gemini, dynamic Anthropic model resolution and failure
   diagnostics. No architecture changed.
@@ -32,12 +38,12 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.0.1
+  platform: 1.0.2
   bootstrap: 1.0.1
   update: 1.0.0
-  verify: 1.0.1
-  routing: 1.0.1
-  doctor: 1.0.1
+  verify: 1.0.2
+  routing: 1.0.2
+  doctor: 1.0.2
   manifest: 1.0.1
 
 # Services this platform supervises. Supervisor is the init for services on
