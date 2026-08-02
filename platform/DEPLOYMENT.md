@@ -511,6 +511,49 @@ The exact promotion commands live in the `alternates` block of
 repo and redeploy — never hand-edit the deployed copy, which `update.sh`
 replaces.
 
+### Provider validation (the doctor)
+
+`nicks-stack-provider-doctor` validates every provider end to end and is the
+only thing that should be trusted to say a provider works:
+
+```bash
+sudo nicks-stack-provider-doctor                  # all providers, real inference
+sudo nicks-stack-provider-doctor --provider gemini
+sudo nicks-stack-provider-doctor --no-inference   # credential + catalog only, no spend
+sudo nicks-stack-provider-doctor --json
+```
+
+Three checks per provider, stopping at the first failure so a later step can
+never report a misleading PASS:
+
+1. **credential** — resolved from the environment, `~/.hermes/.env`, or the
+   1Password map via `op read`. Values are never printed.
+2. **catalog** — the configured model id is checked against the vendor's own
+   live model list. A stale pin fails loudly instead of routing somewhere
+   unintended.
+3. **inference** — one real, minimal completion. Through `hermes chat` when the
+   CLI is present, so the actual runtime path is exercised.
+
+Output is a PASS/FAIL block per provider followed by the current mode,
+provider, model, available and unavailable providers, and the installed Ollama
+models. Exit code is 0 only when every checked provider passed.
+
+| Provider | Mechanism | Credential |
+|---|---|---|
+| Anthropic | `anthropic` plugin (`plugins.enabled`) | `ANTHROPIC_API_KEY` |
+| OpenRouter | `openrouter` plugin (`plugins.enabled`) | `OPENROUTER_API_KEY` |
+| Gemini | custom provider → Google's OpenAI-compatible endpoint, `--provider custom:gemini` | `GEMINI_API_KEY` |
+| Ollama | custom provider → local daemon, `--provider custom:ollama` | none (local) |
+
+Gemini and Ollama are declared in `files/config.yaml` → `providers:` using the
+same key shape as the existing `vercel-ai-gateway` entry (`base_url`,
+`key_env`, `transport: chat_completions`). Neither invents a plugin name.
+
+Ollama specifics: the daemon is detected at `$OLLAMA_HOST` (default
+`http://127.0.0.1:11434`), installed models come from `/api/tags`, and nothing
+about the model set is assumed. If the daemon is down or no model is pulled,
+`local` mode exits 4 and never falls back to a paid route.
+
 ### Changing the baseline model
 
 The router does not touch `config.yaml`. To change what the *gateway itself*
@@ -570,6 +613,7 @@ ls -1t /opt/nicks-stack/backups/
 # then Option A (restore files) or Option B (git checkout + update.sh) above
 
 # Routing
+nicks-stack-provider-doctor
 nicks-stack-route show
 nicks-stack-route set fast
 nicks-stack-route run deep --confirm -q "..."

@@ -35,6 +35,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 try:
@@ -148,6 +149,24 @@ def op_mapped(key_env: str) -> bool:
     return bool(op.get("enabled")) and key_env in (op.get("env") or {})
 
 
+def ollama_probe(mode: dict) -> tuple[bool, list[str], str]:
+    """Detect the local Ollama daemon and what is pulled on it.
+    Returns (reachable, installed_models, detail). Never raises."""
+    host = os.environ.get("OLLAMA_HOST", "").strip() or mode.get("host") or "http://127.0.0.1:11434"
+    if not host.startswith("http"):
+        host = f"http://{host}"
+    host = host.rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=5) as resp:
+            data = json.loads(resp.read().decode(errors="replace"))
+    except Exception:  # noqa: BLE001 - any failure means "not available"
+        return False, [], f"no Ollama daemon at {host}"
+    models = [m.get("name", "") for m in (data.get("models") or []) if m.get("name")]
+    if not models:
+        return False, [], f"Ollama is running at {host} but no model is pulled (ollama pull <model>)"
+    return True, models, f"{len(models)} model(s) installed: {', '.join(models[:4])}"
+
+
 def specialist_status(spec: dict) -> dict:
     """Auth status of a build-mode specialist CLI. Runs only its documented
     read-only status command."""
@@ -184,7 +203,14 @@ def mode_availability(cfg: dict, name: str) -> dict:
     }
 
     if execution == "ollama":
-        info["detail"] = "not installed/configured — reserved for the Ollama sprint"
+        reachable, models, detail = ollama_probe(mode)
+        info["installed_models"] = models
+        info["detail"] = detail
+        if not reachable:
+            return info
+        # Pin from routing.yaml when set, otherwise whatever is pulled locally.
+        info["model"] = mode.get("model") or models[0]
+        info["available"] = True
         return info
 
     if execution == "specialist-cli":
@@ -316,9 +342,26 @@ def cmd_run(cfg: dict, args) -> int:
     execution = mode.get("execution")
 
     if execution == "ollama":
-        print(f"local mode is not available: {info['detail']}", file=sys.stderr)
-        print("No paid route was used. Install Ollama first, then re-run.", file=sys.stderr)
-        return E_UNAVAILABLE
+        if not info["available"]:
+            print(f"local mode is not available: {info['detail']}", file=sys.stderr)
+            print("No paid route was used. Fix Ollama first, then re-run.", file=sys.stderr)
+            return E_UNAVAILABLE
+        if not args.prompt:
+            die("a prompt is required: run local -q \"...\"", E_USAGE)
+        # Resolve the model the same way availability did, then use the normal
+        # one-shot path — local is a route like any other once it is up.
+        mode = dict(mode)
+        mode["model"] = info["model"]
+        rc, out, errs = run_oneshot(mode, args.prompt, args.toolsets, args.timeout)
+        if rc == 0:
+            if not args.quiet:
+                print(f"[route: {name} → {mode.get('provider')}/{mode['model']} (local)]",
+                      file=sys.stderr)
+            print(out)
+            return E_OK
+        print(f"local route failed (exit {rc}): {errs or 'no stderr'}", file=sys.stderr)
+        print("Local mode does not fall back to a paid route.", file=sys.stderr)
+        return E_ERR
 
     if execution == "specialist-cli":
         # This router never executes a coding agent. It reports the plan; a
@@ -402,7 +445,7 @@ def cmd_probe(cfg: dict, args) -> int:
     for name in names:
         mode = get_mode(cfg, name)
         info = mode_availability(cfg, name)
-        if mode.get("execution") in ("ollama", "specialist-cli"):
+        if mode.get("execution") == "specialist-cli":
             print(f"{name:<6} skipped      ({info['detail']})")
             continue
         if not info["available"]:

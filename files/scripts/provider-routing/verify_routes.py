@@ -63,7 +63,7 @@ def main() -> int:
         execution = mode.get("execution")
 
         if execution == "ollama":
-            print(f"INFO|{name}: local placeholder — reports unavailable until Ollama is installed")
+            print(f"INFO|{name}: local Ollama route — daemon and models are checked at run time")
             continue
 
         if execution == "specialist-cli":
@@ -126,12 +126,45 @@ def main() -> int:
         if mode.get("requires_confirmation"):
             print(f"PASS|{name} requires explicit confirmation before it can run")
 
-    for aname, raw in (routing.get("alternates") or {}).items():
-        alt = raw or {}
-        state = "enabled" if alt.get("enabled") else "inert"
-        print(f"INFO|alternate '{aname}': {state} ({alt.get('status', 'unknown')})")
-        if alt.get("enabled") and not alt.get("provider"):
-            print(f"FAIL|alternate '{aname}' is enabled but names no provider")
+    # Providers declared for the doctor: each must name a provider Hermes can
+    # actually address, and a credential the secret plane can resolve.
+    for pname, raw in (routing.get("providers") or {}).items():
+        spec = raw or {}
+        if not spec.get("enabled", True):
+            print(f"INFO|provider '{pname}': declared but disabled")
+            continue
+        provider = spec.get("provider") or ""
+        key = spec.get("key_env")
+
+        if provider.startswith("custom:"):
+            bare = provider.split(":", 1)[1]
+            if bare in custom:
+                print(f"PASS|provider '{pname}' -> {provider} (declared in config.yaml providers)")
+            else:
+                print(
+                    f"FAIL|provider '{pname}' uses {provider} but config.yaml has no "
+                    f"providers.{bare} entry"
+                )
+        elif provider in plugins or f"{provider}-provider" in plugins:
+            print(f"PASS|provider '{pname}' -> {provider} (plugin enabled)")
+        elif provider:
+            print(f"FAIL|provider '{pname}' names '{provider}', which is not enabled anywhere")
+        else:
+            print(f"FAIL|provider '{pname}' has no provider name")
+
+        if key:
+            if key in op_env:
+                print(f"PASS|provider '{pname}': {key} is in the 1Password map")
+            else:
+                print(f"WARN|provider '{pname}': {key} is not in the 1Password map")
+        elif pname == "ollama":
+            print(f"INFO|provider '{pname}': local daemon, no credential required")
+
+        models = spec.get("models")
+        if models:
+            print(f"INFO|provider '{pname}': {len(models)} candidate model id(s) — the doctor verifies them live")
+        elif pname == "ollama":
+            print(f"INFO|provider '{pname}': models discovered from /api/tags at run time")
 
     return 0
 

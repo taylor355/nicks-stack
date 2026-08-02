@@ -108,57 +108,67 @@ modes:
 
   local:
     execution: ollama
-    status: not-configured
-    provider: null
-    model: null
+    provider: custom:ollama
+    model: null                # resolved at run time from installed models
+    key_env: null              # local daemon, no credential
     fallback: null
-    summary: Placeholder for a future local Ollama route.
+    summary: Local Ollama — private, free, no data leaves the machine.
     why: >-
-      Reserved for the Ollama sprint. Nothing is installed, so this mode fails
-      cleanly with "not installed/configured" instead of silently falling back
-      to a paid route.
+      Routes to the Ollama daemon on this machine. The model is whichever one
+      is pulled locally (discovered from /api/tags), so nothing is assumed. If
+      the daemon is down or no model is pulled, this mode fails cleanly with
+      "not installed/configured" and never falls back to a paid route.
 
 # --------------------------------------------------------------------------
-# Alternates — providers whose Hermes convention is known but whose route is
-# not yet verified on this machine. They are inert: no mode references them.
-# Each carries the exact command that promotes it to a usable route.
+# Providers — what `nicks-stack-provider-doctor` validates end to end.
+# Each entry is credential + catalog + one real inference. Model ids here are
+# CANDIDATES: the doctor checks every one against the vendor's own live list
+# and reports what it actually used, so a stale pin degrades to a clear
+# message instead of a silent wrong route.
 # --------------------------------------------------------------------------
-alternates:
+providers:
+
+  anthropic:
+    display: Anthropic
+    provider: anthropic          # plugins.enabled → anthropic-provider
+    key_env: ANTHROPIC_API_KEY
+    enabled: true
+    models:                      # the three ids the modes above route to
+      - claude-haiku-4-5
+      - claude-sonnet-5
+      - claude-opus-5
 
   openrouter:
-    provider: openrouter
+    display: OpenRouter
+    provider: openrouter         # plugins.enabled → openrouter, openrouter-provider
     key_env: OPENROUTER_API_KEY
-    enabled: false
-    status: provider-verified-model-unverified
-    note: >-
-      The provider is real and already wired: `openrouter` and
-      `openrouter-provider` are in plugins.enabled and OPENROUTER_API_KEY is in
-      the 1Password map. What is NOT verified is which OpenRouter model id to
-      route to — those are vendor/model strings that change over time, so
-      picking one here would be a guess.
-    verify: |
-      # 1. list the ids OpenRouter actually serves right now
-      curl -s https://openrouter.ai/api/v1/models \
-        | python3 -c "import sys,json;[print(m['id']) for m in json.load(sys.stdin)['data']]" | sort
-      # 2. prove the route works end to end (costs a few tokens)
-      hermes chat -Q --provider openrouter -m '<vendor/model-id>' -q 'Reply with exactly: ok'
-      # 3. only then add it to a mode in this file and redeploy
+    enabled: true
+    # Verified present in https://openrouter.ai/api/v1/models on 2026-08-02.
+    # The catalog is public, so the doctor re-verifies these on every run.
+    models:
+      - anthropic/claude-sonnet-5
+      - google/gemini-3.6-flash
+      - meta-llama/llama-3.3-70b-instruct
 
   gemini:
-    provider: null
+    display: Gemini
+    # No Gemini plugin ships with this Hermes, so Gemini is registered as a
+    # custom provider (config.yaml → providers.gemini) against Google's
+    # OpenAI-compatible endpoint and addressed as custom:<name>, exactly like
+    # providers.meta-model-api. Verified: POST /v1beta/openai/chat/completions
+    # answers (400 on a bad key, not 404), and /v1beta/models lists the ids.
+    provider: custom:gemini
     key_env: GEMINI_API_KEY
-    enabled: false
-    status: provider-convention-unverified
-    note: >-
-      GEMINI_API_KEY is stored in 1Password and mapped in config.yaml, but this
-      repository contains no Gemini/Google provider plugin (plugins.enabled has
-      anthropic/openai/openai-codex/openrouter/xai only, plugins.disabled has
-      novita-provider). Configuring it would mean guessing a plugin name, a
-      key_env and a transport. Left unconfigured on purpose.
-    verify: |
-      # Does the installed Hermes ship a Gemini/Google provider at all?
-      hermes plugins list | grep -iE 'gemini|google|vertex'
-      # If it does, register it with the documented custom-provider convention
-      # (same shape as providers.meta-model-api in config.yaml) and probe it
-      # before any mode points at it. If it does not, the supported path is
-      # OpenRouter with a google/* model id — see the openrouter alternate.
+    enabled: true
+    models:
+      - gemini-3.6-flash
+      - gemini-3.5-flash
+    # If none of the candidates exist for this account, the doctor selects the
+    # newest flash-class model the key can actually see and says so.
+
+  ollama:
+    display: Ollama
+    provider: custom:ollama      # config.yaml → providers.ollama (local, key-less)
+    host: http://127.0.0.1:11434
+    enabled: true
+    models: []                   # discovered from /api/tags — never assumed

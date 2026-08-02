@@ -31,7 +31,7 @@ the command, case-insensitively, whether or not the leading slash is present:
 | `/mode smart` | `nicks-stack-route set smart` | Confirm |
 | `/mode deep` | `nicks-stack-route set deep` | Confirm, and note deep needs per-task confirmation |
 | `/mode build` | `nicks-stack-route set build` | Confirm, and note nothing runs without approval |
-| `/mode local` | `nicks-stack-route set local` | Report that it is not installed yet |
+| `/mode local` | `nicks-stack-route set local` | Confirm, naming the local model in use |
 | `/modes` or "what modes are there" | `nicks-stack-route modes` | Show the table |
 | "why are you using that model" | `nicks-stack-route explain <mode>` | Quote the reason |
 
@@ -46,7 +46,7 @@ Natural phrasings map to the same commands: "use the cheap model" → `set fast`
 | `smart` | `anthropic` / `claude-sonnet-5` — **the gateway's own model** | Default. Business reasoning, Notion, Gmail, Calendar, Drive, CRM |
 | `deep` | `anthropic` / `claude-opus-5` | Executive strategy, acquisitions, complex insurance/tax/legal/financial work |
 | `build` | Claude Code, else Codex — local CLIs | Software engineering and repository changes |
-| `local` | Ollama | Not installed yet. Fails cleanly, never falls back to a paid route |
+| `local` | Ollama (local daemon) | Private, free, offline. Fails cleanly if the daemon is down or no model is pulled |
 
 `smart` is what the gateway already runs, so answering in smart mode costs
 nothing extra — no subprocess, no added latency. The other model-backed modes
@@ -74,8 +74,9 @@ afterwards). Claude Code and Codex are locally authenticated CLIs — never try 
 drive a consumer subscription through an API key, and never claim a specialist
 ran if its auth check failed.
 
-**Local fails clean.** If Ollama is not installed, say so and stop. Do not
-silently spend money on a paid route the user did not choose.
+**Local fails clean.** `local` routes to the Ollama daemon on this machine and
+uses whichever model is pulled there. If the daemon is down or no model is
+pulled, say so and stop — never fall back to a paid route.
 
 **Fallback goes one hop, downward only.** A failed `fast` retries once on
 `smart`. Nothing ever escalates into `deep` automatically — the CLI refuses.
@@ -101,9 +102,18 @@ to parse it.
 ## Checking availability
 
 ```bash
-nicks-stack-route preflight        # can each mode run right now?
+nicks-stack-route preflight           # can each mode run right now?
 nicks-stack-route probe --mode fast   # 1-token live call (costs a few tokens)
+
+nicks-stack-provider-doctor           # full validation of every provider
+nicks-stack-provider-doctor --no-inference   # config + catalog only, no spend
 ```
+
+The **provider doctor** is the authority on whether a provider works. For each
+one it checks the credential, verifies the model id against the vendor's own
+live catalog, and performs one real inference — then prints PASS or FAIL plus
+the current mode, provider, model, available/unavailable providers and the
+installed Ollama models. Run it after any provider change.
 
 `probe` is the only command that spends money. Use it after a deployment or when
 a route misbehaves — not routinely.
@@ -117,5 +127,6 @@ a route misbehaves — not routinely.
 - It does not persist a mode per conversation. Hermes has no supported
   per-conversation model state, so the selected mode is per-agent and applies
   until it is changed again.
-- OpenRouter and Gemini are not wired to any mode. See the `alternates` block in
-  `routing.yaml` for the exact verification commands that would promote them.
+- OpenRouter and Gemini are verified providers (see the `providers` block in
+  `routing.yaml`) but no mode routes to them by default — they are available for
+  explicit use and as future alternates. Use the doctor to confirm them.

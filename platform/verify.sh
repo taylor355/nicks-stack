@@ -57,6 +57,8 @@ readonly OP_ITEM="${NICKS_STACK_OP_ITEM:-Hermes Agent Secrets}"
 readonly BRIDGE_HEALTH_URL="http://127.0.0.1:8787/health"
 readonly ROUTING_FILE="${HERMES_HOME}/routing.yaml"
 readonly ROUTE_CLI="${PREFIX_BIN}/nicks-stack-route"
+readonly DOCTOR_CLI="${PREFIX_BIN}/nicks-stack-provider-doctor"
+readonly OLLAMA_URL="${OLLAMA_HOST:-http://127.0.0.1:11434}/api/tags"
 
 QUIET=0
 
@@ -451,7 +453,23 @@ section "7. Provider routing (config only — no model calls, no secrets)"
 # ==========================================================================
 check_critical "routing map present"     test -s "$ROUTING_FILE"
 check_critical "routing CLI installed"   test -x "$ROUTE_CLI"
-check_advisory "routing skill installed" test -f "$HERMES_HOME/skills/provider-routing/SKILL.md"
+check_critical "provider doctor installed" test -x "$DOCTOR_CLI"
+check_advisory "routing skill installed"   test -f "$HERMES_HOME/skills/provider-routing/SKILL.md"
+
+# Local Ollama: presence is advisory (the stack works without it), but a
+# half-installed daemon should be visible. Read-only GET, no inference.
+if have curl; then
+  if OLLAMA_TAGS="$(curl -fsS --max-time 5 "$OLLAMA_URL" 2>/dev/null)"; then
+    OLLAMA_COUNT="$(printf '%s' "$OLLAMA_TAGS" | grep -o '"name"' | wc -l | tr -d ' ')"
+    if [[ "$OLLAMA_COUNT" -gt 0 ]]; then
+      pass "Ollama daemon reachable with $OLLAMA_COUNT model(s) installed"
+    else
+      warn "Ollama daemon is running but no model is pulled — local mode will fail cleanly"
+    fi
+  else
+    note "Ollama not running — local mode reports unavailable (expected unless you use it)"
+  fi
+fi
 
 if [[ -r "$ROUTING_FILE" ]]; then
   # Cross-checks routing.yaml against config.yaml: every mode must name a

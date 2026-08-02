@@ -810,6 +810,19 @@ else
   warn "routing CLI not found at $ROUTE_TARGET — /mode commands will not work"
 fi
 
+# Provider doctor: same symlink pattern as the router.
+DOCTOR_TARGET="$HERMES_HOME/scripts/provider-routing/doctor.py"
+if [[ -L "$PREFIX_BIN/nicks-stack-provider-doctor" \
+      && "$(readlink -f "$PREFIX_BIN/nicks-stack-provider-doctor")" == "$DOCTOR_TARGET" ]]; then
+  skip "provider doctor symlink already correct"
+elif [[ -f "$DOCTOR_TARGET" ]]; then
+  ln -sf "$DOCTOR_TARGET" "$PREFIX_BIN/nicks-stack-provider-doctor"
+  ok "linked $PREFIX_BIN/nicks-stack-provider-doctor -> $DOCTOR_TARGET"
+  CHANGES=$((CHANGES + 1))
+else
+  warn "provider doctor not found at $DOCTOR_TARGET"
+fi
+
 install_managed "$FILES_DIR/Obsidian.desktop"          "$DESKTOP_DIR/Obsidian.desktop"                      0755
 install_managed "$FILES_DIR/NicksStackSetup.desktop"   "$DESKTOP_DIR/NicksStackSetup.desktop"               0755
 ok "launchers and desktop entries installed"
@@ -984,6 +997,7 @@ health_check "bridge wrapper installed"         test -x "$PREFIX_BIN/nicks-stack
 health_check "onboarding script installed"      test -x "$PREFIX_BIN/nicks-stack-onboard.sh"
 health_check "routing map installed"            test -s "$HERMES_HOME/routing.yaml"
 health_check "routing CLI installed"            test -x "$PREFIX_BIN/nicks-stack-route"
+health_check "provider doctor installed"        test -x "$PREFIX_BIN/nicks-stack-provider-doctor"
 health_check "op CLI works"                     bash -c 'op --version >/dev/null 2>&1'
 health_check "cloudflared works"                bash -c 'cloudflared --version >/dev/null 2>&1'
 health_check "Obsidian binary present"          test -x /opt/Obsidian/obsidian

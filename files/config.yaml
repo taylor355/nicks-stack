@@ -32,6 +32,27 @@ providers:
     transport: codex_responses
     default_model: muse-spark-1.1
     context_length: 1048576
+  # Gemini via Google's OpenAI-compatible endpoint. This Hermes ships no
+  # Gemini plugin, so it is registered with the documented custom-provider
+  # convention (same key shape as vercel-ai-gateway) and addressed as
+  # `--provider custom:gemini`. Verified: POST .../v1beta/openai/chat/completions
+  # answers requests (400 on a bad key, not 404). default_model is a starting
+  # point — nicks-stack-provider-doctor verifies it against the live model list
+  # and reports which id it actually used.
+  gemini:
+    name: Google Gemini
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    key_env: GEMINI_API_KEY
+    transport: chat_completions
+    default_model: gemini-3.6-flash
+  # Ollama on this machine. Local, key-less (OLLAMA_API_KEY is a placeholder
+  # the daemon ignores — it is not a secret). No default_model: the model is
+  # always passed per call with -m, because what is pulled is machine-specific.
+  ollama:
+    name: Ollama (local)
+    base_url: http://127.0.0.1:11434/v1
+    key_env: OLLAMA_API_KEY
+    transport: chat_completions
 agent:
   max_turns: 60
   service_tier: fast
