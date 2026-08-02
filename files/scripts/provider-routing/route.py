@@ -305,7 +305,7 @@ def cmd_modes(cfg: dict, args) -> int:
     for r in rows:
         mark = "*" if r["mode"] == selected else " "
         status = "ok" if r["available"] else "UNAVAILABLE"
-        target = f"{r['provider']}/{r['model']}" if r["provider"] else r["execution"]
+        target = f"{r['provider']}/{r['model'] or '<resolved at run time>'}" if r["provider"] else r["execution"]
         print(f" {mark} {r['mode']:<6} {target:<32} {status:<12} {r['detail']}")
     return E_OK
 
