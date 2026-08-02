@@ -52,8 +52,10 @@ umask 022
 # --------------------------------------------------------------------------
 # Constants — pinned exactly as build_template.py pins them
 # --------------------------------------------------------------------------
-readonly SCRIPT_NAME="nicks-stack bootstrap"
-readonly SCRIPT_VERSION="0.2.2"          # tracks build_template.py VERSION
+readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
+# Platform + component versions live in files/platform.yaml (the declared
+# spec). This mirror is only for the banner before that file is deployed.
+readonly SCRIPT_VERSION="1.0.0"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -807,8 +809,9 @@ install -D -m 0600 "$FILES_DIR/config.yaml"  "$STAGE/hermes/config.yaml"
 install -D -m 0644 "$FILES_DIR/SOUL.md"      "$STAGE/hermes/SOUL.md"
 install -D -m 0600 "$FILES_DIR/hermes.env"   "$STAGE/hermes/env"
 install -D -m 0644 "$FILES_DIR/routing.yaml" "$STAGE/hermes/routing.yaml"
+install -D -m 0644 "$FILES_DIR/platform.yaml" "$STAGE/hermes/platform.yaml"
 install -D -m 0644 "$FILES_DIR/obsidian-registry.json" "$STAGE/obsidian.json"
-ok "staged config.yaml, SOUL.md, env, routing.yaml, obsidian.json"
+ok "staged config.yaml, SOUL.md, env, routing.yaml, platform.yaml, obsidian.json"
 
 # --- stage: the four Dewey trees ------------------------------------------
 for pair in "plugins:hermes/plugins" "skills:hermes/skills" "scripts:hermes/scripts" "local-packages:hermes/local-packages"; do
@@ -840,6 +843,8 @@ install_managed  "$STAGE/hermes/SOUL.md"     "$HERMES_HOME/SOUL.md"     0644
 merge_env_defaults "$STAGE/hermes/env"       "$HERMES_HOME/.env"        0600
 # Provider routing map — declarative, no secrets, read by nicks-stack-route.
 install_managed  "$STAGE/hermes/routing.yaml" "$HERMES_HOME/routing.yaml" 0644
+# Declared platform spec: version, services, identity, company builds.
+install_managed  "$STAGE/hermes/platform.yaml" "$HERMES_HOME/platform.yaml" 0644
 
 # --- place: the four Dewey trees ------------------------------------------
 sync_tree_managed "$STAGE/hermes/plugins"        "$HERMES_HOME/plugins"        "plugins"
@@ -898,6 +903,7 @@ install_managed "$FILES_DIR/onboard-launch.sh"         "$PREFIX_BIN/nicks-stack-
 install_managed "$FILES_DIR/telegram-pair.py"          "$PREFIX_BIN/nicks-stack-telegram-pair.py"           0755
 install_managed "$FILES_DIR/obsidian-launch"           "$PREFIX_BIN/obsidian-launch"                        0755
 install_managed "$FILES_DIR/ollama-run.sh"             "$PREFIX_BIN/nicks-stack-ollama-run.sh"              0755
+install_managed "$FILES_DIR/jack.sh"                   "$PREFIX_BIN/jack"                                   0755
 
 # Routing CLI: a symlink so the tree copy stays the single source of the code.
 ROUTE_TARGET="$HERMES_HOME/scripts/provider-routing/route.py"
@@ -1126,6 +1132,9 @@ health_check "AgentPhone bridge installed"      test -x "$BRIDGE_DIR/agentphone_
 health_check "gateway wrapper installed"        test -x "$PREFIX_BIN/hermes-gateway-run.sh"
 health_check "bridge wrapper installed"         test -x "$PREFIX_BIN/nicks-stack-agentphone-bridge-run.sh"
 health_check "onboarding script installed"      test -x "$PREFIX_BIN/nicks-stack-onboard.sh"
+health_check "platform spec installed"          test -s "$HERMES_HOME/platform.yaml"
+health_check "jack command installed"           test -x "$PREFIX_BIN/jack"
+health_check "platform library installed"       test -f "$HERMES_HOME/scripts/platform/lib.py"
 health_check "routing map installed"            test -s "$HERMES_HOME/routing.yaml"
 health_check "routing CLI installed"            test -x "$PREFIX_BIN/nicks-stack-route"
 health_check "provider doctor installed"        test -x "$PREFIX_BIN/nicks-stack-provider-doctor"
@@ -1186,25 +1195,27 @@ if ((${#HEALTH_FAILURES[@]} > 0)); then
   exit 1
 fi
 
-cat <<BANNER
+# ==========================================================================
+# Deployment report — generated from the same detection every other tool uses,
+# and persisted as the machine-readable manifest.
+# ==========================================================================
+MANIFEST_SCRIPT="$HERMES_HOME/scripts/platform/manifest.py"
+if [[ -f "$MANIFEST_SCRIPT" ]]; then
+  if NICKS_STACK_REPO="$REPO_ROOT" python3 "$MANIFEST_SCRIPT" write >/dev/null 2>&1; then
+    ok "platform manifest written: $STACK_ROOT/platform-manifest.json"
+  else
+    warn "could not write the platform manifest"
+  fi
+  printf '\n%s────────────────────────────────────────────────────────────%s\n' "$C_BLUE" "$C_RESET"
+  NICKS_STACK_REPO="$REPO_ROOT" python3 "$MANIFEST_SCRIPT" report 2>/dev/null || \
+    warn "could not render the deployment report"
+  printf '%s────────────────────────────────────────────────────────────%s\n' "$C_BLUE" "$C_RESET"
+else
+  warn "platform scripts missing — no deployment report (expected at $MANIFEST_SCRIPT)"
+fi
 
-${C_GREEN}${C_BOLD}Nick's Stack is installed.${C_RESET}
-
-  Hermes home     : $HERMES_HOME
-  Vault           : $VAULT_DIR
-  Bridge          : $BRIDGE_DIR
-  Services        : hermes-gateway, agentphone-bridge (supervisor)
-  Log             : $LOG_FILE
-
-${C_BOLD}Next — run the onboarding:${C_RESET}
-
-  ${C_BOLD}sudo ${PREFIX_BIN}/nicks-stack-onboard.sh${C_RESET}
-
-It connects your Nous account, mints your Telegram bot from a QR code, and
-(optionally) wires 1Password. On a desktop session it also opens by itself,
-and 'Nick's Stack Setup' is on the desktop.
-
-BANNER
+printf '\n%sHealth report:%s  sudo jack doctor\n' "$C_BOLD" "$C_RESET"
+printf '%sLog:%s           %s\n' "$C_BOLD" "$C_RESET" "$LOG_FILE"
 
 ok "bootstrap complete"
 exit 0

@@ -1,3 +1,7 @@
 nicks-stack.resolved.json
 __pycache__/
 *.pyc
+
+# python bytecode (bootstrap excludes it, keep it out of git too)
+__pycache__/
+*.pyc

@@ -32,8 +32,8 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-readonly SCRIPT_NAME="nicks-stack verify"
-readonly SCRIPT_VERSION="0.2.2"          # tracks build_template.py VERSION
+readonly SCRIPT_NAME="Taylor AI Platform verify"
+readonly SCRIPT_VERSION="1.0.0"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -59,6 +59,9 @@ readonly ROUTING_FILE="${HERMES_HOME}/routing.yaml"
 readonly ROUTE_CLI="${PREFIX_BIN}/nicks-stack-route"
 readonly DOCTOR_CLI="${PREFIX_BIN}/nicks-stack-provider-doctor"
 readonly OLLAMA_URL="${OLLAMA_HOST:-http://127.0.0.1:11434}/api/tags"
+readonly PLATFORM_LIB="${HERMES_HOME}/scripts/platform/lib.py"
+readonly PLATFORM_FILE="${HERMES_HOME}/platform.yaml"
+readonly JACK_CLI="${PREFIX_BIN}/jack"
 SUPERVISOR_CONFD="/etc/supervisor/conf.d"
 
 QUIET=0
@@ -219,6 +222,17 @@ section "1. Platform"
 # shellcheck disable=SC1091
 . /etc/os-release
 note "host: ${PRETTY_NAME:-${ID:-unknown}}  kernel: $(uname -r)  arch: $(uname -m)"
+
+if [[ -r "$PLATFORM_FILE" ]]; then
+  pass "platform spec present: $(python3 -c "
+import yaml,sys
+d=yaml.safe_load(open('$PLATFORM_FILE')) or {}
+print(f\"{d.get('name','?')} v{d.get('version','?')} ({d.get('status','?')})\")" 2>/dev/null || echo unreadable)"
+else
+  fail "platform spec missing: $PLATFORM_FILE"
+fi
+check_critical "jack command installed"     test -x "$JACK_CLI"
+check_critical "platform library installed" test -f "$PLATFORM_LIB"
 
 case " ${ID:-} ${ID_LIKE:-} " in
   *" ubuntu "*|*" debian "*) pass "supported distribution (${ID:-unknown} ${VERSION_ID:-})" ;;
@@ -578,12 +592,18 @@ else
   note "Ollama not under supervisor on this machine"
 fi
 
-# 3. API reachable + 4. installed models
+# 3. API reachable + 4. installed models — via the shared detection library,
+# so this agrees with `jack doctor` and the router by construction.
 OLLAMA_MODELS_LIST=""
-if have curl && OLLAMA_TAGS_JSON="$(curl -fsS --max-time 5 "$OLLAMA_URL" 2>/dev/null)"; then
+OLLAMA_JSON="$(python3 "$PLATFORM_LIB" ollama 2>/dev/null || true)"
+if [[ -n "$OLLAMA_JSON" ]] && printf '%s' "$OLLAMA_JSON" | grep -q '"serving": true'; then
   ollama_check "Ollama API reachable" 1 "$OLLAMA_URL"
-  OLLAMA_MODELS_LIST="$(printf '%s' "$OLLAMA_TAGS_JSON" \
-    | tr ',' '\n' | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u)"
+  OLLAMA_MODELS_LIST="$(printf '%s' "$OLLAMA_JSON" | python3 -c "
+import json,sys
+try:
+    print('\n'.join(json.load(sys.stdin).get('models') or []))
+except Exception:
+    pass")"
   OLLAMA_MODEL_COUNT="$(printf '%s' "$OLLAMA_MODELS_LIST" | grep -c . || true)"
   if [[ "${OLLAMA_MODEL_COUNT:-0}" -gt 0 ]]; then
     ollama_check "Ollama models installed" 1 "$OLLAMA_MODEL_COUNT: $(printf '%s' "$OLLAMA_MODELS_LIST" | tr '\n' ' ')"

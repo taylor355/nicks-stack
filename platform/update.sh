@@ -46,7 +46,7 @@ IFS=$'\n\t'
 umask 022
 
 readonly SCRIPT_NAME="nicks-stack update"
-readonly SCRIPT_VERSION="0.2.2"          # tracks build_template.py VERSION
+readonly SCRIPT_VERSION="1.0.0"          # Taylor AI Platform
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -60,7 +60,7 @@ readonly BACKUP_ROOT="${STACK_ROOT}/backups"
 # Trees bootstrap.sh owns and replaces — everything else under $HERMES_HOME
 # belongs to the user or the agent and must survive byte-for-byte.
 readonly MANAGED_TREES=(plugins skills scripts local-packages)
-readonly MANAGED_FILES=(config.yaml SOUL.md routing.yaml)
+readonly MANAGED_FILES=(config.yaml SOUL.md routing.yaml platform.yaml)
 
 # Env-style files: bootstrap may APPEND default keys, so these are checked
 # key-by-key (no key may vanish, no existing value may change) rather than by
@@ -454,7 +454,7 @@ for name in "${MANAGED_TREES[@]}"; do copy_into_backup "$HERMES_HOME/$name"; don
 for launcher in \
   hermes-gateway-run.sh nicks-stack-agentphone-bridge-run.sh nicks-stack-onboard.sh \
   nicks-stack-op-enable nicks-stack-onboard-launch.sh nicks-stack-telegram-pair.py obsidian-launch \
-  nicks-stack-ollama-run.sh
+  nicks-stack-ollama-run.sh jack
 do
   copy_into_backup "$PREFIX_BIN/$launcher"
 done
@@ -547,6 +547,16 @@ if ((DO_RESTART)); then
   fi
 else
   info "--no-restart: services left as they were (config changes apply on next restart)"
+fi
+
+# Refresh the machine-readable manifest so it reflects what was just deployed.
+MANIFEST_SCRIPT="$HERMES_HOME/scripts/platform/manifest.py"
+if [[ -f "$MANIFEST_SCRIPT" ]]; then
+  if NICKS_STACK_REPO="$REPO_ROOT" python3 "$MANIFEST_SCRIPT" write >/dev/null 2>&1; then
+    ok "platform manifest refreshed"
+  else
+    warn "could not refresh the platform manifest"
+  fi
 fi
 
 # ==========================================================================

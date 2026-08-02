@@ -5,6 +5,10 @@
 # Validates every configured provider end to end and prints a PASS/FAIL block
 # per provider, followed by the current routing state.
 #
+#   SUPERSEDED by `jack doctor` (scripts/platform/doctor.py), which reports the
+#   whole platform. This remains as the provider-only deep validation that
+#   `jack doctor --providers` builds on, and as a compatibility entry point.
+#
 #   nicks-stack-provider-doctor                 # verify every provider
 #   nicks-stack-provider-doctor --provider gemini
 #   nicks-stack-provider-doctor --no-inference  # config + catalog only, no spend
@@ -43,6 +47,10 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# Shared platform detection — one implementation for every tool.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "platform"))
+import lib as platform_lib  # noqa: E402
 
 try:
     import yaml
@@ -95,50 +103,8 @@ def load_yaml(path: Path) -> dict:
 
 
 def resolve_key(key_env: str) -> tuple[str | None, str]:
-    """Return (value, source). The value is never printed by any caller."""
-    val = os.environ.get(key_env, "").strip()
-    if val:
-        return val, "environment"
-
-    try:
-        with HERMES_ENV.open() as fh:
-            for line in fh:
-                line = line.strip()
-                if line.startswith("export "):
-                    line = line[len("export "):]
-                if line.startswith(f"{key_env}="):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if val:
-                        return val, "~/.hermes/.env"
-    except OSError:
-        pass
-
-    # 1Password map — the same op:// reference Hermes itself resolves at start.
-    cfg = load_yaml(CONFIG_FILE)
-    op = (cfg.get("secrets") or {}).get("onepassword") or {}
-    ref = (op.get("env") or {}).get(key_env)
-    if ref and shutil.which("op"):
-        token = os.environ.get("OP_SERVICE_ACCOUNT_TOKEN", "").strip()
-        if not token and OP_ENV.is_file():
-            try:
-                for line in OP_ENV.read_text().splitlines():
-                    if line.startswith("OP_SERVICE_ACCOUNT_TOKEN="):
-                        token = line.split("=", 1)[1].strip()
-                        break
-            except OSError:
-                token = ""
-        if token:
-            env = dict(os.environ, OP_SERVICE_ACCOUNT_TOKEN=token)
-            try:
-                proc = subprocess.run(
-                    ["op", "read", ref], capture_output=True, text=True,
-                    timeout=30, env=env, check=False,
-                )
-                if proc.returncode == 0 and proc.stdout.strip():
-                    return proc.stdout.strip(), "1Password"
-            except (OSError, subprocess.SubprocessError):
-                pass
-    return None, "unresolved"
+    """Delegates to the shared lib. The value is never printed by any caller."""
+    return platform_lib.resolve_key_value(key_env)
 
 
 # --------------------------------------------------------------------------
@@ -408,37 +374,16 @@ def check_gemini(spec: dict, args) -> Result:
     return res
 
 
-# Embedding models (nomic-embed-text, all-minilm, …) are installed alongside
-# chat models but cannot answer a prompt. Never select one for inference.
-EMBED_HINTS = ("embed", "embedding", "bge-", "gte-", "minilm")
-
-
-def is_chat_model(name: str) -> bool:
-    lowered = name.lower()
-    return not any(hint in lowered for hint in EMBED_HINTS)
+# Embedding-model exclusion and supervisor state both live in the shared lib.
+is_chat_model = platform_lib.is_chat_model
 
 
 def supervisor_state(program: str) -> str:
-    """Supervisor is this platform's init for services — report what it says."""
-    if not shutil.which("supervisorctl"):
-        return ""
-    try:
-        proc = subprocess.run(["supervisorctl", "status", program],
-                              capture_output=True, text=True, timeout=15, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    line = (proc.stdout or "").strip()
-    if not line:
-        return ""
-    parts = line.split()
-    return parts[1] if len(parts) > 1 else ""
+    return platform_lib.supervisor_status().get(program, {}).get("state", "")
 
 
 def ollama_host(spec: dict) -> str:
-    host = os.environ.get("OLLAMA_HOST", "").strip() or spec.get("host") or "http://127.0.0.1:11434"
-    if not host.startswith("http"):
-        host = f"http://{host}"
-    return host.rstrip("/")
+    return platform_lib.ollama_host(spec)
 
 
 def check_ollama(spec: dict, args) -> Result:

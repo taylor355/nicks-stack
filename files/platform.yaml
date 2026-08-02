@@ -1,0 +1,92 @@
+# ==========================================================================
+# Taylor AI Platform — declared platform spec
+# ==========================================================================
+# Deployed to /root/.hermes/platform.yaml. This is the DECLARED side of the
+# platform: what version this is, which components ship with it, who the agent
+# is meant to be, and which company builds inherit it.
+#
+# The DETECTED side — what is actually installed and running on a given
+# machine — is written at deploy time to /opt/nicks-stack/platform-manifest.json
+# by `jack manifest`. Together they are the canonical source of truth:
+#
+#   platform.yaml            what this release IS      (in git, reviewed)
+#   platform-manifest.json   what this machine HAS     (generated, per host)
+#
+# Bump `version` for a platform release; bump a component version when that
+# component changes behaviour. `jack version` reads both.
+# ==========================================================================
+name: Taylor AI Platform
+version: 1.0.0
+released: 2026-08-02
+status: frozen
+description: >-
+  Deployment platform for Hermes-based company agents: bootstrap, update and
+  verify tooling, an explicit provider-routing layer (Anthropic, OpenRouter,
+  Gemini, Ollama), supervised services, and a 1Password secret plane. Frozen at
+  v1.0.0 — from here the work is agent identity and company builds, not
+  infrastructure.
+
+# Component versions. These are what `jack doctor` reports under Versions.
+versions:
+  platform: 1.0.0
+  bootstrap: 1.0.0
+  update: 1.0.0
+  verify: 1.0.0
+  routing: 1.0.0
+  doctor: 1.0.0
+  manifest: 1.0.0
+
+# Services this platform supervises. Supervisor is the init for services on
+# this platform — not systemd. `optional` services may be absent on a machine
+# without that being a failure.
+services:
+  - name: hermes-gateway
+    optional: false
+    wrapper: /usr/local/bin/hermes-gateway-run.sh
+    description: Hermes agent gateway — Telegram, MCP connections, plugins, cron.
+  - name: agentphone-bridge
+    optional: true
+    wrapper: /usr/local/bin/nicks-stack-agentphone-bridge-run.sh
+    description: AgentPhone webhook bridge. Dormant until AgentPhone is keyed.
+  - name: ollama
+    optional: true
+    wrapper: /usr/local/bin/nicks-stack-ollama-run.sh
+    description: Local AI server. Only configured when local AI is enabled.
+
+# The agent this platform hosts. Identity content (SOUL.md, persona, voice) is
+# NOT part of the platform — it is the next sprint. This block only records who
+# the platform is being built for so the doctor can report it.
+identity:
+  name: Jack
+  role: Executive AI for Taylor
+  status: platform-only
+  note: >-
+    Identity work has not started. SOUL.md currently holds the stack's stock
+    persona. Building Jack's identity is the first post-freeze sprint.
+
+# Company builds that will inherit this platform. Declared, not provisioned —
+# each becomes its own deployment using the same bootstrap/update/verify tools.
+companies:
+  - name: Outlaw OS
+    status: declared
+    note: Inherits this platform. Not yet provisioned.
+  - name: Anderson OS
+    status: declared
+    note: Inherits this platform. Not yet provisioned.
+  - name: Signl OS
+    status: declared
+    note: Inherits this platform. Not yet provisioned.
+
+# Integrations the platform knows how to detect. Presence is reported by
+# `jack doctor`; absence is not a failure unless the deployment needs it.
+integrations:
+  - Telegram
+  - 1Password
+  - Composio
+  - AgentMail
+  - AgentPhone
+  - Latitude
+  - Orgo
+  - Obsidian
+  - Claude Code
+  - Codex

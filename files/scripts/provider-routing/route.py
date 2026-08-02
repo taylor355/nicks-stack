@@ -35,8 +35,11 @@ import os
 import shutil
 import subprocess
 import sys
-import urllib.request
 from pathlib import Path
+
+# Shared platform detection — one implementation, used by every tool.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "platform"))
+import lib as platform_lib  # noqa: E402
 
 try:
     import yaml
@@ -149,30 +152,13 @@ def op_mapped(key_env: str) -> bool:
     return bool(op.get("enabled")) and key_env in (op.get("env") or {})
 
 
-EMBED_HINTS = ("embed", "embedding", "bge-", "gte-", "minilm")
-
-
-def is_chat_model(name: str) -> bool:
-    lowered = name.lower()
-    return not any(hint in lowered for hint in EMBED_HINTS)
-
-
 def ollama_probe(mode: dict) -> tuple[bool, list[str], str]:
-    """Detect the local Ollama daemon and what is pulled on it.
-    Returns (reachable, installed_models, detail). Never raises."""
-    host = os.environ.get("OLLAMA_HOST", "").strip() or mode.get("host") or "http://127.0.0.1:11434"
-    if not host.startswith("http"):
-        host = f"http://{host}"
-    host = host.rstrip("/")
-    try:
-        with urllib.request.urlopen(f"{host}/api/tags", timeout=5) as resp:
-            data = json.loads(resp.read().decode(errors="replace"))
-    except Exception:  # noqa: BLE001 - any failure means "not available"
-        return False, [], f"no Ollama daemon at {host}"
-    models = [m.get("name", "") for m in (data.get("models") or []) if m.get("name")]
-    if not models:
-        return False, [], f"Ollama is running at {host} but no model is pulled (ollama pull <model>)"
-    return True, models, f"{len(models)} model(s) installed: {', '.join(models[:4])}"
+    """Thin wrapper over the shared platform detection (scripts/platform/lib.py)
+    so the router, the doctor and verify.sh can never disagree about Ollama."""
+    info = platform_lib.ollama_detect(mode)
+    if not info["serving"] or not info["models"]:
+        return False, info["models"], info["detail"]
+    return True, info["models"], info["detail"]
 
 
 def specialist_status(spec: dict) -> dict:
@@ -219,7 +205,7 @@ def mode_availability(cfg: dict, name: str) -> dict:
         # Pin from routing.yaml when set, otherwise the first chat-capable
         # model pulled locally. Embedding models are never selected — they
         # cannot answer a prompt.
-        chat = [m for m in models if is_chat_model(m)]
+        chat = [m for m in models if platform_lib.is_chat_model(m)]
         if not chat:
             info["detail"] = (
                 f"only embedding models are installed ({', '.join(models)}) — "

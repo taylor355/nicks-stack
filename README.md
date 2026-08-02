@@ -17,6 +17,32 @@
 
 </div>
 
+<div align="center">
+
+## 🏗️ Taylor AI Platform — v1.0.0 (frozen)
+
+This repository now ships a **deployment platform**, not just a template.
+Install it on any existing Ubuntu machine — no Orgo Scale plan required:
+
+```bash
+sudo bash platform/bootstrap.sh     # install
+sudo jack doctor                    # one health report
+```
+
+| | |
+|---|---|
+| **Tooling** | `bootstrap.sh` · `update.sh` · `verify.sh` · `jack` |
+| **Providers** | Anthropic · OpenRouter · Gemini · Ollama (local) |
+| **Services** | Supervisor-managed gateway, AgentPhone bridge, Ollama |
+| **Modes** | `fast` · `smart` · `deep` · `build` · `local` — explicit, never auto-escalating |
+| **Truth** | `platform.yaml` (declared) + `platform-manifest.json` (detected) |
+
+Full guide: **[platform/DEPLOYMENT.md](platform/DEPLOYMENT.md)** — install,
+update, verify, rollback, provider routing, local AI, and how future company
+deployments inherit this platform.
+
+</div>
+
 ---
 
 ## ✨ What it feels like

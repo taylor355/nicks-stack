@@ -1,20 +1,62 @@
-# Nick's Stack — Deployment Guide
+# Taylor AI Platform — Deployment Guide
 
-Portable deployment of Nick's Stack onto an **existing** Ubuntu machine — an
-Orgo Hermes computer, a VPS, or bare metal. No Orgo Scale plan, no template
-publishing, no golden image.
+**Platform v1.0.0 — frozen.** From here the work is agent identity and company
+builds; infrastructure changes should be bug fixes only.
 
-`build_template.py` remains the source of truth for *what* the stack is (files,
-destinations, install order, services). `platform/bootstrap.sh` is the source of
-truth for *how* it lands on a running machine. The other two scripts wrap it:
+Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
+computer, a VPS, or bare metal. No Orgo Scale plan, no template publishing, no
+golden image.
 
-| Script | Writes? | Purpose |
-|---|---|---|
-| `platform/bootstrap.sh` | yes | Install or re-install. Idempotent — installs only what is missing. |
-| `platform/update.sh` | yes | Update an existing deployment, with a rollback point and a before/after proof that preserved data survived. |
-| `platform/verify.sh` | **no** | Read-only health check. Exits non-zero if a critical check fails. |
+## What the platform is
 
-Requirements: Ubuntu 24.04 (or Debian-family), `amd64`, root, outbound HTTPS.
+| Layer | What it is |
+|---|---|
+| **Tooling** | `bootstrap.sh` (install), `update.sh` (update + rollback point), `verify.sh` (read-only health), `jack` (one health command) |
+| **Provider layer** | Explicit routing across Anthropic, OpenRouter, Gemini and local Ollama. Five modes, no automatic escalation, every route inspectable |
+| **Services** | Supervisor-managed: `hermes-gateway`, `agentphone-bridge`, `ollama` (optional). Supervisor is this platform's init for services — not systemd |
+| **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
+| **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
+| **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+## The one command to know
+
+```bash
+sudo jack doctor
+```
+
+One report, eight sections: Platform · Services · Providers · Integrations ·
+Identity · Companies · Versions · Warnings. It makes no billable call unless you
+add `--providers`. Everything it reports comes from
+`~/.hermes/scripts/platform/lib.py`, the same detection library `bootstrap.sh`,
+`update.sh`, `verify.sh` and the routing CLI use — so no two tools can disagree
+about the machine.
+
+```bash
+sudo jack doctor              # full report, free
+sudo jack doctor --providers  # + one real inference per provider
+sudo jack doctor --json       # machine-readable
+sudo jack version             # platform + component versions
+sudo jack manifest show       # the machine-readable manifest
+sudo jack mode show           # current routing mode
+```
+
+## How future company deployments inherit this platform
+
+`Outlaw OS`, `Anderson OS` and `Signl OS` are declared in `platform.yaml` and
+each becomes its own deployment of **this same platform** — one machine per
+company, no shared state:
+
+1. Provision a VM and clone this repo at the platform version you want.
+2. `sudo bash platform/bootstrap.sh` — identical tooling, identical services.
+3. Give that company its own 1Password vault and its own service account, then
+   repoint the `op://` references (see §5, *Creating an isolated second agent*).
+4. Onboard its own Telegram bot — never reuse a token across companies.
+5. Layer the company's identity and workflows on top. The platform does not
+   change; only what runs on it does.
+
+The platform version in `platform.yaml` is what a future deployment reads to
+know exactly what it is running. Bump it only for platform releases.
+
 
 ---
 
