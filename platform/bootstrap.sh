@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.0.3"
+readonly SCRIPT_VERSION="1.1.3"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -71,7 +71,10 @@ readonly OBSIDIAN_DEB_SHA="3644e3ef19bcd23db4d17f7c73311b5245429391a2a48b361da93
 
 # build.apt from the template + the two extras the install script apt-gets
 # itself (libsecret-1-0 for Obsidian) and needs to supervise anything.
-readonly APT_PACKAGES=(git xz-utils python3-yaml ripgrep ffmpeg libsecret-1-0)
+# python3-venv/python3-pip are what `python3 -m venv` needs on Ubuntu; without
+# them the Composio SDK venv cannot be created at all.
+readonly APT_PACKAGES=(git xz-utils python3-yaml python3-venv python3-pip \
+                       ripgrep ffmpeg libsecret-1-0)
 
 # Global npm helpers — same pins, same fallback-to-unpinned behaviour.
 readonly NPM_HELPERS=(
@@ -168,6 +171,12 @@ Installs Nick's Stack (Hermes agent + 1Password + AgentPhone bridge +
 Obsidian + supervised services) onto an existing Ubuntu/Debian machine.
 
   sudo bash platform/bootstrap.sh [--help]
+
+Composio (required whenever platform.yaml declares a composio: block):
+  --skip-composio         do not install the Composio SDK on this machine.
+                          Without it, a Composio install failure ABORTS the
+                          run rather than leaving Jack silently without
+                          Gmail/Calendar/Drive/Contacts/Notion.
 
 Local AI (Ollama) — all optional, nothing is downloaded unless you ask:
   --with-ollama           supervise an already-installed Ollama (no network)
@@ -383,6 +392,7 @@ health_check() {
 # --------------------------------------------------------------------------
 # Preflight
 # --------------------------------------------------------------------------
+SKIP_COMPOSIO=0      # opt out of the Composio SDK on a machine that must not have it
 WITH_OLLAMA=0        # configure the supervised Ollama service
 INSTALL_OLLAMA=0     # also install the Ollama binary (needs the network)
 OLLAMA_PULL=""       # optional, explicit model pulls (needs the network)
@@ -390,6 +400,7 @@ OLLAMA_PULL=""       # optional, explicit model pulls (needs the network)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
+    --skip-composio)  SKIP_COMPOSIO=1 ;;
     --with-ollama)    WITH_OLLAMA=1 ;;
     --install-ollama) INSTALL_OLLAMA=1; WITH_OLLAMA=1 ;;
     --ollama-models)
@@ -899,7 +910,7 @@ install_managed "$FILES_DIR/gateway-run.sh"            "$PREFIX_BIN/hermes-gatew
 install_managed "$FILES_DIR/agentphone-bridge-run.sh"  "$PREFIX_BIN/nicks-stack-agentphone-bridge-run.sh"   0755
 install_managed "$FILES_DIR/onboard.sh"                "$PREFIX_BIN/nicks-stack-onboard.sh"                 0755
 install_managed "$FILES_DIR/op-enable.py"              "$PREFIX_BIN/nicks-stack-op-enable"                  0755
-install_managed "$FILES_DIR/scripts/platform/composio_session.py" "$PREFIX_BIN/nicks-stack-composio-session"  0755
+
 install_managed "$FILES_DIR/onboard-launch.sh"         "$PREFIX_BIN/nicks-stack-onboard-launch.sh"          0755
 install_managed "$FILES_DIR/telegram-pair.py"          "$PREFIX_BIN/nicks-stack-telegram-pair.py"           0755
 install_managed "$FILES_DIR/obsidian-launch"           "$PREFIX_BIN/obsidian-launch"                        0755
@@ -917,6 +928,42 @@ elif [[ -f "$ROUTE_TARGET" ]]; then
   CHANGES=$((CHANGES + 1))
 else
   warn "routing CLI not found at $ROUTE_TARGET — /mode commands will not work"
+fi
+
+# Composio is REQUESTED whenever platform.yaml declares a composio: block —
+# that block is what makes Gmail/Calendar/Drive/Contacts/Notion resolvable at
+# all. If it is requested and cannot be completed, that is a failed install,
+# not a warning: continuing would hand over a machine whose declared
+# capabilities silently do not exist. --skip-composio opts out deliberately.
+COMPOSIO_REQUESTED=0
+if ((SKIP_COMPOSIO == 0)) && grep -q '^composio:' "$HERMES_HOME/platform.yaml" 2>/dev/null; then
+  COMPOSIO_REQUESTED=1
+fi
+
+# Composio session manager: symlink, NOT a copy. composio_session.py does
+# `sys.path.insert(0, Path(__file__).resolve().parent); import lib`, and
+# Path.resolve() FOLLOWS a symlink back to the scripts tree — so the relative
+# import works. A copy resolves to /usr/local/bin, where lib.py does not exist,
+# and the launcher dies with ModuleNotFoundError before any Composio code runs.
+# Same reason route.py and doctor.py are linked. (op-enable.py is copied safely
+# because it has no relative import.) A symlink also means there is no second
+# copy whose version header can drift from the deployed platform.
+COMPOSIO_TARGET="$HERMES_HOME/scripts/platform/composio_session.py"
+if [[ -L "$PREFIX_BIN/nicks-stack-composio-session" \
+      && "$(readlink -f "$PREFIX_BIN/nicks-stack-composio-session")" == "$COMPOSIO_TARGET" ]]; then
+  skip "composio session symlink already correct"
+elif [[ -f "$COMPOSIO_TARGET" ]]; then
+  # A previous release installed a COPY here; replace it.
+  if [[ -e "$PREFIX_BIN/nicks-stack-composio-session" && ! -L "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
+    backup_of "$PREFIX_BIN/nicks-stack-composio-session"
+    rm -f "$PREFIX_BIN/nicks-stack-composio-session"
+    info "replaced the copied composio launcher with a symlink"
+  fi
+  ln -sf "$COMPOSIO_TARGET" "$PREFIX_BIN/nicks-stack-composio-session"
+  ok "linked $PREFIX_BIN/nicks-stack-composio-session -> $COMPOSIO_TARGET"
+  CHANGES=$((CHANGES + 1))
+else
+  warn "composio session manager not found at $COMPOSIO_TARGET"
 fi
 
 # Provider doctor: same symlink pattern as the router.
@@ -1180,6 +1227,19 @@ health_check "cloudflared works"                bash -c 'cloudflared --version >
 health_check "Obsidian binary present"          test -x /opt/Obsidian/obsidian
 health_check "filesystem MCP helper present"    bash -c 'npm ls -g --depth=0 @modelcontextprotocol/server-filesystem >/dev/null 2>&1'
 
+# BEHAVIOUR, not implementation: the launcher must actually execute. This is
+# what catches a broken import path, a bad interpreter or a missing library —
+# regardless of whether the launcher is a symlink, a copy or a wrapper.
+# `status --offline` touches no network and no provider.
+#
+# The test is "produced parseable JSON", NOT "exited 0": status exits 1 when
+# Composio is merely unconfigured (no session yet), which is a normal state on
+# a fresh machine and says nothing about whether the launcher works.
+if ((COMPOSIO_REQUESTED)); then
+  health_check "nicks-stack-composio-session executes" bash -c \
+    "'$PREFIX_BIN/nicks-stack-composio-session' status --offline --json | python3 -c 'import json,sys; json.load(sys.stdin)'"
+fi
+
 # Informational only — these are what the onboarding is FOR.
 if [[ -s "$HERMES_HOME/auth.json" ]]; then
   ok "model account already connected (auth.json present)"
@@ -1234,28 +1294,61 @@ fi
 # Composio dependency can never break the agent runtime.  (v1.1.0)
 # ==========================================================================
 COMPOSIO_VENV="${STACK_ROOT}/composio-venv"
-if [[ -x "$COMPOSIO_VENV/bin/python" ]] && "$COMPOSIO_VENV/bin/python" -c 'import composio' 2>/dev/null; then
-  skip "composio SDK already installed ($COMPOSIO_VENV)"
+
+# The interpreter that MATTERS is the one that runs the launcher — the system
+# python3 — not the venv's. composio_session.py appends the venv's
+# site-packages to sys.path, so this is the import that has to succeed.
+composio_importable() {
+  local sp
+  sp="$(echo "$COMPOSIO_VENV"/lib/python3*/site-packages)"
+  [[ -d "$sp" ]] || return 1
+  python3 -c "import sys; sys.path.append('$sp'); import composio" 2>/dev/null
+}
+
+if ((COMPOSIO_REQUESTED == 0)); then
+  log "Composio not requested (no composio: block, or --skip-composio) — skipping the SDK"
+elif composio_importable; then
+  skip "composio SDK already importable by the system python ($COMPOSIO_VENV)"
 else
   info "installing the composio SDK into $COMPOSIO_VENV"
-  if python3 -m venv "$COMPOSIO_VENV" >/dev/null 2>&1 \
-     && "$COMPOSIO_VENV/bin/pip" install -q --disable-pip-version-check composio >/dev/null 2>&1; then
-    ok "composio SDK installed"
+  COMPOSIO_ERR=""
+  if [[ ! -x "$COMPOSIO_VENV/bin/python" ]]; then
+    # Keep the real error. Discarding it is why the previous failure was invisible.
+    if ! COMPOSIO_ERR="$(python3 -m venv "$COMPOSIO_VENV" 2>&1)"; then
+      err "could not create $COMPOSIO_VENV:"
+      printf '%s\n' "$COMPOSIO_ERR" | sed 's/^/    /'
+      die "Composio is required by platform.yaml but its venv could not be created.
+    Most often this is the missing python3-venv package:
+        sudo apt-get install -y python3-venv python3-pip
+    Then re-run this script, or pass --skip-composio to install without Composio."
+    fi
+  fi
+  if ! COMPOSIO_ERR="$("$COMPOSIO_VENV/bin/pip" install --disable-pip-version-check composio 2>&1)"; then
+    err "pip could not install the composio SDK:"
+    printf '%s\n' "$COMPOSIO_ERR" | tail -20 | sed 's/^/    /'
+    die "Composio is required by platform.yaml but the SDK could not be installed.
+    Check network/proxy egress to PyPI, then re-run, or pass --skip-composio."
+  fi
+  if composio_importable; then
+    ok "composio SDK installed and importable by the system python"
     CHANGES=$((CHANGES + 1))
   else
-    # Non-fatal: the gateway still starts, it just has no Composio tools.
-    warn "could not install the composio SDK — Composio Sessions will be unavailable"
+    die "the composio SDK installed into $COMPOSIO_VENV but the system python3
+    cannot import it. The launcher runs under system python3, so this would
+    fail at run time. Check that $COMPOSIO_VENV was built from the same
+    python3 (\$(python3 -V)); rebuild it with:
+        sudo rm -rf $COMPOSIO_VENV && sudo bash platform/bootstrap.sh"
   fi
 fi
 
 # Mint/resume Jack's Composio session now so the first gateway start is warm.
-# Never fatal, and it prints presence only — no key, no URL.
-if [[ -x "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
+# Prints presence only — no key, no URL.
+if ((COMPOSIO_REQUESTED)) && [[ -x "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
   if "$PREFIX_BIN/nicks-stack-composio-session" init; then
     ok "composio session ready"
   else
-    info "composio session not established yet — add COMPOSIO_API_KEY, then:"
-    info "  sudo nicks-stack-composio-session init"
+    info "composio session not established yet (usually a missing COMPOSIO_API_KEY)"
+    info "  sudo nicks-stack-composio-session status"
   fi
 fi
 

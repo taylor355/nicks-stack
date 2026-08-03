@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.2 — frozen.** From here the work is agent identity and company
+**Platform v1.1.3 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,50 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.3 — Composio launcher packaging
+
+**The defect was packaging, not Composio.** `/usr/local/bin/nicks-stack-composio-session`
+was installed by `install_managed` — a **byte copy**. The script does:
+
+```python
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lib
+```
+
+On a copy, `Path(__file__).resolve().parent` is `/usr/local/bin`, where
+`lib.py` does not exist → `ModuleNotFoundError` before any Composio code ran.
+`jack composio status` still worked because `jack` execs the script **in the
+scripts tree**.
+
+The codebase already had the right pattern nine lines away: `nicks-stack-route`
+and `nicks-stack-provider-doctor` are **symlinks**, and `Path.resolve()` follows
+a symlink back to the tree so the relative import succeeds. (`op-enable.py` is
+copied safely — it has no relative import.) The composio launcher now uses the
+same symlink, and bootstrap replaces an existing copy in place.
+
+A symlink also removes the version-drift failure mode structurally: there is no
+second copy whose header can lag the deployed platform.
+
+| | Before | After |
+|---|---|---|
+| Launcher | copy → `ModuleNotFoundError` | symlink into the scripts tree |
+| `python3 -m venv` prereqs | absent from `APT_PACKAGES` | `python3-venv`, `python3-pip` added |
+| venv / pip errors | `>/dev/null 2>&1`, one `warn` | captured and printed |
+| SDK import check | the **venv's** python | the **system** python — the one that runs the launcher |
+| Composio install failure | warning, install continues | **aborts** when `platform.yaml` declares `composio:`; `--skip-composio` opts out |
+| Invariant | — | the launcher **executes and emits parseable JSON** |
+
+**The invariant is behaviour, not implementation.** bootstrap's health check and
+`verify.sh` both run `status --offline --json` and require **parseable JSON** —
+not exit 0, because `status` exits 1 whenever Composio is merely unconfigured,
+which is a normal state on a fresh machine. Tested across four cases: copied
+launcher → FAIL; symlinked + configured → PASS; symlinked + unconfigured
+(exit 1) → PASS; symlinked with `lib.py` removed → FAIL.
+
+```bash
+sudo bash platform/bootstrap.sh --skip-composio   # install without Composio
+```
 
 ### v1.1.2 — Composio credential propagation
 

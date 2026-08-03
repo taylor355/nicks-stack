@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.2"
+readonly SCRIPT_VERSION="1.1.3"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -630,6 +630,23 @@ else
   # ── Composio Sessions: the five hardening checks (v1.1.1) ─────────────
   # `--offline` keeps verify fast and network-free for everything except the
   # session-validity probe, which is the one check that needs a live call.
+  # BEHAVIOURAL INVARIANT: the installed launcher must execute. We do not
+  # assert how it is installed (symlink/copy/wrapper) — only that running it
+  # works, which is what a broken import path or interpreter actually breaks.
+  # The invariant is "it produced parseable JSON", not "it exited 0": status
+  # exits 1 whenever Composio is unconfigured, which is a legitimate state and
+  # is reported separately below. Only a launcher that cannot RUN fails here.
+  if [[ -e "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
+    COMPOSIO_LAUNCHER_OUT="$("$PREFIX_BIN/nicks-stack-composio-session" status --offline --json 2>&1 || true)"
+    if printf '%s' "$COMPOSIO_LAUNCHER_OUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+      pass "nicks-stack-composio-session executes (status --offline)"
+    else
+      fail "nicks-stack-composio-session FAILED to execute: $(printf '%s' "$COMPOSIO_LAUNCHER_OUT" | tail -1)"
+    fi
+  else
+    warn "nicks-stack-composio-session is not installed"
+  fi
+
   COMPOSIO_JSON="$(python3 "$HERMES_HOME/scripts/platform/composio_session.py" status --json 2>/dev/null || true)"
   cs_get() { printf '%s' "$COMPOSIO_JSON" | python3 -c "
 import json,sys

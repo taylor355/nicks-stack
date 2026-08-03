@@ -114,8 +114,10 @@ def _sdk():
         from composio import Composio  # noqa: PLC0415
         return Composio, ""
     except ImportError as exc:
-        return None, (f"composio SDK not importable ({exc}). Install it with: "
-                      f"sudo bash platform/bootstrap.sh --with-composio")
+        return None, (f"composio SDK not importable ({exc}) — the venv is missing "
+                      f"or was not built from this python3. Rebuild with: "
+                      f"sudo rm -rf /opt/nicks-stack/composio-venv && "
+                      f"sudo bash platform/bootstrap.sh")
 
 
 # config.yaml carries these sentinels with NOTHING between them. The composio
