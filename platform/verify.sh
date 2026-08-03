@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_VERSION="1.1.1"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -622,48 +622,79 @@ else
   if [[ "$(cap_bool composio_wired)" == "true" ]]; then
     pass "composio MCP server configured — the backing for every declared capability"
   else
-    fail "composio MCP server is NOT configured — Gmail/Calendar/Drive/Contacts/Notion have no implementation"
+    # The entry is runtime-managed: absent means the session is not established
+    # (or was torn down), not that the platform is mis-wired. The session checks
+    # immediately below give the actual reason.
+    fail "composio MCP entry not active — Gmail/Calendar/Drive/Contacts/Notion unavailable; see the session checks below"
   fi
-  # ── Composio Sessions (v1.1.0): six separately-reported facts ──────────
+  # ── Composio Sessions: the five hardening checks (v1.1.1) ─────────────
+  # `--offline` keeps verify fast and network-free for everything except the
+  # session-validity probe, which is the one check that needs a live call.
   COMPOSIO_JSON="$(python3 "$HERMES_HOME/scripts/platform/composio_session.py" status --json 2>/dev/null || true)"
-  cs_bool() { printf '%s' "$COMPOSIO_JSON" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" | head -1; }
+  cs_get() { printf '%s' "$COMPOSIO_JSON" | python3 -c "
+import json,sys
+try: v=json.load(sys.stdin).get(sys.argv[1])
+except Exception: v=None
+print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
 
+  # 1. missing Project API key
   if [[ "$(cap_bool composio_credential)" == "true" ]]; then
     pass "COMPOSIO_API_KEY available"
   else
     fail "COMPOSIO_API_KEY not resolvable — no Composio session can be created"
   fi
+
   if [[ -z "$COMPOSIO_JSON" ]]; then
     warn "composio session status unavailable (composio_session.py not deployed?)"
   else
-    [[ "$(cs_bool sdk_importable)" == "true" ]] \
+    [[ "$(cs_get sdk_importable)" == "True" ]] \
       && pass "composio SDK importable" \
       || fail "composio SDK not importable — run: sudo bash platform/bootstrap.sh"
-    [[ "$(cs_bool session_id_persisted)" == "true" ]] \
-      && pass "composio session id persisted (restarts resume, never re-create)" \
-      || warn "no composio session id persisted yet — run: sudo nicks-stack-composio-session init"
-    [[ "$(cs_bool mcp_url_obtained)" == "true" ]] \
-      && pass "composio MCP url obtained (presence only — value never shown)" \
-      || fail "composio MCP url not obtained — Hermes has no Composio endpoint to connect to"
-    [[ "$(cs_bool mcp_headers_obtained)" == "true" ]] \
-      && pass "composio MCP headers obtained (x-api-key, value never shown)" \
-      || fail "composio MCP headers unavailable"
-    # Parse the arrays properly — a sed range runs past an empty [] and
-    # swallows the rest of the document.
-    cs_list() { printf '%s' "$COMPOSIO_JSON" | python3 -c "
-import json,sys
-try: print(','.join(json.load(sys.stdin).get(sys.argv[1]) or []))
-except Exception: print('')" "$1"; }
-    TOOLKITS="$(cs_list toolkits_resolved)"
-    if [[ -n "$TOOLKITS" ]]; then
-      pass "composio toolkits scoped to the session: $TOOLKITS"
+
+    # 2. session invalid
+    CS_VALID="$(cs_get session_validity)"
+    case "$CS_VALID" in
+      valid)   pass "composio session $(cs_get session_id) is valid (user $(cs_get user_id))" ;;
+      absent)  warn "no composio session yet — run: sudo nicks-stack-composio-session init" ;;
+      invalid) fail "composio session INVALID: $(cs_get session_validity_detail)" ;;
+      *)       warn "composio session validity unknown ($(cs_get session_validity_detail))" ;;
+    esac
+
+    # 3. empty MCP URL / runtime config coherence
+    CS_URL="$(cs_get mcp_url_present)"; CS_CFG="$(cs_get config_entry_active)"
+    if [[ "$CS_URL" == "True" && "$CS_CFG" == "True" ]]; then
+      pass "composio MCP url present and the config entry is active (header: $(cs_get header_type))"
+    elif [[ "$CS_URL" == "False" && "$CS_CFG" == "False" ]]; then
+      note "composio not configured — no MCP url and no config entry (clean absence, not an error)"
     else
-      warn "no composio toolkits resolved yet — run: sudo nicks-stack-composio-session resolve"
+      fail "composio runtime INCOHERENT: url_present=$CS_URL config_entry=$CS_CFG — one without the other"
     fi
-    UNRES="$(cs_list toolkits_unresolved)"
-    if [[ -n "$UNRES" ]]; then
-      fail "composio toolkits UNRESOLVED: $UNRES (slug renamed upstream?)"
+    if grep -qE '^\s*url:\s*(""|'"''"'|$)' "$HERMES_HOME/config.yaml" 2>/dev/null; then
+      fail "config.yaml contains an MCP server with an EMPTY url"
+    else
+      pass "no MCP server in config.yaml has an empty url"
     fi
+
+    # 4. stale mcp.env
+    if [[ "$(cs_get stale_runtime)" == "True" ]]; then
+      fail "STALE composio runtime — mcp.env/config point at a session that no longer resolves. Run: sudo nicks-stack-composio-session init"
+    else
+      pass "no stale composio runtime"
+    fi
+
+    # 5. toolkit scope mismatch
+    CS_MISSING="$(cs_get toolkits_missing)"
+    if [[ -n "$CS_MISSING" ]]; then
+      fail "composio toolkit scope MISMATCH — declared but not in the session: $CS_MISSING"
+    else
+      TK="$(cs_get toolkits_resolved)"
+      if [[ -n "$TK" ]]; then
+        pass "composio toolkit scope matches the declaration: $TK"
+      else
+        note "no composio toolkits scoped yet"
+      fi
+    fi
+    note "composio last verified: $(cs_get last_verified)"
   fi
 
   # The legacy wiring must not come back.

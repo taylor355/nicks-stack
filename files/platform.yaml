@@ -16,11 +16,18 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.0
+version: 1.1.1
 released: 2026-08-03
 status: frozen
 description: >-
-  v1.1.0 migrates Composio from the legacy static MCP endpoint to the Sessions
+  v1.1.1 hardens the Composio Sessions integration: every failure path tears the
+  runtime down (mcp.env removed AND the config entry spliced out), so a stale
+  endpoint cannot survive and an empty url cannot exist; strict toolkit scoping
+  is the default so a resolution failure can never create an unscoped session;
+  session.json carries diagnostic metadata; `jack composio status` reports live
+  state; verify.sh checks stale runtime, missing key, empty url, invalid session
+  and scope mismatch. Architecture unchanged.
+  v1.1.0 migrated Composio from the legacy static MCP endpoint to the Sessions
   API. One durable session for Jack (user_id taylor) is resumed on every gateway
   start; session.mcp.url is re-fetched each time and rendered into a derived
   runtime env file, and the header is x-api-key carrying COMPOSIO_API_KEY.
@@ -81,10 +88,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.0
+  platform: 1.1.1
   bootstrap: 1.0.3
   update: 1.0.3
-  verify: 1.1.0
+  verify: 1.1.1
   routing: 1.0.5
   doctor: 1.0.5
   manifest: 1.0.1

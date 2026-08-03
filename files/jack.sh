@@ -11,6 +11,7 @@
 #   jack manifest [show|write|report]           machine-readable manifest
 #   jack mode [show|set <mode>|run ...]         provider routing (nicks-stack-route)
 #   jack profiles [--json|--rebuild]            runtime profiles (v1.0.3)
+#   jack composio [status|init|resolve]         Composio session state
 #   jack verify                                 full deployment verification
 #
 # Installed to /usr/local/bin/jack by platform/bootstrap.sh.
@@ -46,6 +47,10 @@ jack — Taylor AI Platform
         Runtime profiles: what a validation one-shot loads versus what the
         gateway loads. --rebuild regenerates the derived profile from the
         current config.yaml (it also rebuilds itself whenever that changes).
+
+  jack composio [status|init|resolve] [--json]
+        Live Composio session state: API key, session validity, user, MCP URL,
+        header type, scoped toolkits, last verification. Never prints secrets.
 
   jack verify
         Full deployment verification (platform/verify.sh on the repo).
@@ -143,6 +148,13 @@ if lean and lean.get("kind") != "full":
             print(f"    {att.get('layout'):<12} refs={att.get('refs')}  "
                   f"{(att.get('detail') or '')[:60]}")
 PROFILES
+    ;;
+  composio)
+    COMPOSIO="${PLATFORM_SCRIPTS}/composio_session.py"
+    [[ -f "$COMPOSIO" ]] || die "composio_session.py not installed — redeploy with platform/bootstrap.sh"
+    sub="${1:-status}"
+    [[ $# -gt 0 ]] && shift || true
+    exec python3 "$COMPOSIO" "$sub" "$@"
     ;;
   manifest)
     sub="${1:-show}"

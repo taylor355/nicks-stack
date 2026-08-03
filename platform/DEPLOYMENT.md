@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.0 — frozen.** From here the work is agent identity and company
+**Platform v1.1.1 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,99 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.1 — Composio hardening (fail closed)
+
+Architecture unchanged — this is the hardening pass on v1.1.0.
+
+| | Before | After |
+|---|---|---|
+| Init fails after a good run | `mcp.env` survived; gateway sourced a **dead URL** and burned the 60s connect timeout | Every failure path calls `teardown()`: `mcp.env` deleted **and** the config entry spliced out |
+| Never initialised | `url: ${COMPOSIO_MCP_URL}` expanded to **empty** | The composio entry is **absent from `config.yaml` entirely** — it exists only when a validated session does |
+| Toolkit resolution fails | `toolkits=None` → **unscoped session, every toolkit** | Refuses to create a session at all. Fail closed |
+| Gateway message | "starting without Composio tools" (untrue — it had a stale URL) | "Composio UNAVAILABLE … entry removed … no stale endpoint will be contacted" |
+| Strictness | opt-in `--strict`, never passed | **strict is the default**; `--allow-partial` to opt out |
+
+**How the empty URL became impossible.** `config.yaml` now ships with sentinels
+and nothing between them:
+
+```yaml
+  # >>> composio (runtime-managed) >>>
+  # <<< composio <<<
+```
+
+`composio_session.py` splices the entry in only after the session validates,
+and splices it out on every failure. It is a **line-based splice, not a YAML
+round-trip** — `yaml.safe_dump` would strip every comment in that heavily
+commented file. `activate()` and `teardown()` are a matched pair: both files
+change together or neither does.
+
+**Metadata** in `~/.hermes/composio/session.json`: `session_id`, `user_id`,
+`created_at`, `last_verified`, `toolkits`, `header_type`, `transport`.
+`created_at` survives a resume; `last_verified` updates on every success. No
+secrets.
+
+**Diagnostics:**
+
+```bash
+sudo jack composio            # or: jack composio status
+sudo jack composio status --json
+sudo jack composio status --offline   # skip the live validity call
+sudo jack composio resolve
+```
+
+```
+Composio
+────────────────────
+Project API Key      ✓
+Session              ✓ valid
+Session ID           sess_…
+User                 taylor
+MCP URL              ✓
+Header               x-api-key
+Runtime config       ✓ active in config.yaml
+Toolkits
+  ✓ gmail
+  ✓ googlecalendar
+  ✓ googledrive
+  ✓ googlecontacts
+  ✓ notion
+
+Last verified
+2026-08-03 04:57:33 UTC
+```
+
+**verify.sh** gained the five requested checks: missing Project API key ·
+session invalid · empty MCP URL / runtime incoherence · stale `mcp.env` ·
+toolkit scope mismatch. A **clean absence** (no URL and no config entry) is a
+note, not a failure — that is the designed state when Composio is down. One
+without the other is a **critical** incoherence.
+
+#### Acceptance tests (all passing)
+
+| Test | Proves | Result |
+|---|---|---|
+| Healthy `init` | entry injected, `mcp.env` written | config entry = 1, `mcp.env` present |
+| Composio dies after a good run | **stale URLs cannot survive** | `mcp.env` absent, config entry = 0, exit 1 |
+| Never initialised | **empty URLs are impossible** | `composio` not in `mcp_servers`; no server has an empty url |
+| Toolkit resolution fails | **scope never widens** | no session created, `toolkits=None` never sent, no `session.json` |
+| Stored session invalidated | **auto-recreates, identity preserved** | new session, `user_id: taylor`, 5 toolkits |
+| Composio unavailable | **gateway still starts cleanly** | wrapper takes the else branch, sources nothing |
+| Secret leakage | none | 0 occurrences of URL or key in `status` and `status --json` |
+
+Reproduce on the VM:
+
+```bash
+sudo jack composio status                       # baseline: all ✓
+sudo mv /root/.hermes/.env /root/.hermes/.env.bak   # simulate a lost key
+sudo nicks-stack-composio-session init; echo "exit=$?"   # must be 1
+sudo grep -c '^  composio:' /root/.hermes/config.yaml    # must be 0
+ls /root/.hermes/composio/mcp.env 2>&1                   # must be "No such file"
+sudo mv /root/.hermes/.env.bak /root/.hermes/.env
+sudo nicks-stack-composio-session init          # recovers
+sudo supervisorctl restart hermes-gateway
+sudo jack composio status                       # all ✓ again
+```
 
 ### v1.1.0 — Composio Sessions replaces the legacy static MCP endpoint
 

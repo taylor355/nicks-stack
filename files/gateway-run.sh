@@ -33,13 +33,20 @@ set +a
 # always current. Re-minting every start is what makes URL expiry a non-issue.
 # Non-fatal by design: without Composio the gateway still runs, it just has no
 # Composio tools — the same posture as every other optional integration.
+# On any failure the init tears its own runtime down — it removes mcp.env AND
+# the composio entry from config.yaml — so there is nothing stale left to
+# source and Hermes starts with no Composio server configured at all.
 if [ -x /usr/local/bin/nicks-stack-composio-session ]; then
-  /usr/local/bin/nicks-stack-composio-session init || \
-    echo "[gateway] composio session init failed — starting without Composio tools" >&2
+  if /usr/local/bin/nicks-stack-composio-session init; then
+    set -a
+    . "$HERMES_HOME/composio/mcp.env"
+    set +a
+  else
+    echo "[gateway] Composio UNAVAILABLE — session init failed; the Composio MCP" >&2
+    echo "[gateway] entry has been removed from config.yaml and no stale endpoint" >&2
+    echo "[gateway] will be contacted. Jack starts without Composio capabilities." >&2
+  fi
 fi
-set -a
-[ -f "$HERMES_HOME/composio/mcp.env" ] && . "$HERMES_HOME/composio/mcp.env"
-set +a
 
 # Lifetime flock: an Orgo boot race can start TWO supervisords, each spawning
 # this service — twin gateways then SIGTERM each other via --replace every ~2s,

@@ -405,20 +405,20 @@ mcp_servers:
       ORGO_API_KEY: ${ORGO_API_KEY}
       ORGO_DEFAULT_COMPUTER_ID: ${ORGO_DEFAULT_COMPUTER_ID}
     enabled: true
-  # Composio Sessions (v1.1.0). The legacy static endpoint
-  # (connect.composio.dev/mcp + x-consumer-api-key + ck_ consumer key) is gone.
-  # COMPOSIO_MCP_URL is minted per session by nicks-stack-composio-session and
-  # sourced from ~/.hermes/composio/mcp.env by hermes-gateway-run.sh; the header
-  # value is the Project API key, which is exactly what the SDK puts in
-  # session.mcp.headers ({"x-api-key": <api key>}) — verified in the installed
-  # SDK, ToolRouter._create_mcp_server_config. Env expansion inside a url: is
-  # already proven by the ideabrowser server below.
-  composio:
-    url: ${COMPOSIO_MCP_URL}
-    enabled: true
-    headers:
-      x-api-key: ${COMPOSIO_API_KEY}
-    connect_timeout: 60.0
+  # Composio Sessions. The entry between the sentinels below is INJECTED at
+  # run time by nicks-stack-composio-session, and only once a session has been
+  # established and validated. It is deliberately ABSENT otherwise, so Hermes
+  # is never handed an empty or stale url — the failure mode is "no Composio
+  # tools", never "a broken MCP server". Do not hand-edit between the markers.
+  #
+  # When active the entry is:
+  #     composio: {url: ${COMPOSIO_MCP_URL}, headers: {x-api-key: ${COMPOSIO_API_KEY}}}
+  # COMPOSIO_MCP_URL comes from ~/.hermes/composio/mcp.env (0600, derived,
+  # re-minted every gateway start). The header value is the Project API key —
+  # exactly what session.mcp.headers contains, per the installed SDK's
+  # ToolRouter._create_mcp_server_config.
+  # >>> composio (runtime-managed) >>>
+  # <<< composio <<<
   agentmail:
     url: https://mcp.agentmail.to/mcp
     enabled: true
