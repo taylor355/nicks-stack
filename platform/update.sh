@@ -77,7 +77,10 @@ readonly MANAGED_FILES=(config.yaml SOUL.md routing.yaml platform.yaml)
 # rebuilt by bootstrap.sh on every run, so nothing is lost by excluding them.
 # (Only the derived config.yaml and its stamp are real files here — the
 # credential entries in a profile are symlinks, which `find -type f` skips.)
-readonly DERIVED_TREES=(profiles)
+# `composio` holds the persisted session id and the regenerated MCP runtime
+# env. Both are derived: the id is re-resumable and the env is re-minted on
+# every gateway start, so neither belongs in the preserved-data proof.
+readonly DERIVED_TREES=(profiles composio)
 
 # Env-style files: bootstrap may APPEND default keys, so these are checked
 # key-by-key (no key may vanish, no existing value may change) rather than by

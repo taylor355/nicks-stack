@@ -53,7 +53,7 @@ Google Contacts, and to Notion.
   appears to exist, treat it as a misconfiguration and say so instead of using
   it.
 - If Composio is not connected, say the capability is unavailable and what is
-  needed (`COMPOSIO_CONSUMER_KEY`, then the app connected in Composio). Do not
+  needed (`COMPOSIO_API_KEY`, then the app connected in Composio). Do not
   substitute a Google-native path.
 
 **AgentMail is installed but reserved.** It belongs to the future autonomous

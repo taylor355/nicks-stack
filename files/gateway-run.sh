@@ -28,6 +28,19 @@ set -a
 [ -f "$HERMES_HOME/.env" ] && . "$HERMES_HOME/.env"
 set +a
 
+# Composio Sessions (v1.1.0): resume the persisted session and re-fetch its MCP
+# endpoint before the gateway starts, so config.yaml's ${COMPOSIO_MCP_URL} is
+# always current. Re-minting every start is what makes URL expiry a non-issue.
+# Non-fatal by design: without Composio the gateway still runs, it just has no
+# Composio tools — the same posture as every other optional integration.
+if [ -x /usr/local/bin/nicks-stack-composio-session ]; then
+  /usr/local/bin/nicks-stack-composio-session init || \
+    echo "[gateway] composio session init failed — starting without Composio tools" >&2
+fi
+set -a
+[ -f "$HERMES_HOME/composio/mcp.env" ] && . "$HERMES_HOME/composio/mcp.env"
+set +a
+
 # Lifetime flock: an Orgo boot race can start TWO supervisords, each spawning
 # this service — twin gateways then SIGTERM each other via --replace every ~2s,
 # forever (field-tested; build-recipe §9). Blocking flock parks the loser.

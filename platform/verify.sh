@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.0.6"
+readonly SCRIPT_VERSION="1.1.0"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -624,10 +624,53 @@ else
   else
     fail "composio MCP server is NOT configured — Gmail/Calendar/Drive/Contacts/Notion have no implementation"
   fi
+  # ── Composio Sessions (v1.1.0): six separately-reported facts ──────────
+  COMPOSIO_JSON="$(python3 "$HERMES_HOME/scripts/platform/composio_session.py" status --json 2>/dev/null || true)"
+  cs_bool() { printf '%s' "$COMPOSIO_JSON" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" | head -1; }
+
   if [[ "$(cap_bool composio_credential)" == "true" ]]; then
-    pass "COMPOSIO_CONSUMER_KEY resolvable"
+    pass "COMPOSIO_API_KEY available"
   else
-    warn "COMPOSIO_CONSUMER_KEY not resolvable — Composio-backed capabilities will fail at run time"
+    fail "COMPOSIO_API_KEY not resolvable — no Composio session can be created"
+  fi
+  if [[ -z "$COMPOSIO_JSON" ]]; then
+    warn "composio session status unavailable (composio_session.py not deployed?)"
+  else
+    [[ "$(cs_bool sdk_importable)" == "true" ]] \
+      && pass "composio SDK importable" \
+      || fail "composio SDK not importable — run: sudo bash platform/bootstrap.sh"
+    [[ "$(cs_bool session_id_persisted)" == "true" ]] \
+      && pass "composio session id persisted (restarts resume, never re-create)" \
+      || warn "no composio session id persisted yet — run: sudo nicks-stack-composio-session init"
+    [[ "$(cs_bool mcp_url_obtained)" == "true" ]] \
+      && pass "composio MCP url obtained (presence only — value never shown)" \
+      || fail "composio MCP url not obtained — Hermes has no Composio endpoint to connect to"
+    [[ "$(cs_bool mcp_headers_obtained)" == "true" ]] \
+      && pass "composio MCP headers obtained (x-api-key, value never shown)" \
+      || fail "composio MCP headers unavailable"
+    # Parse the arrays properly — a sed range runs past an empty [] and
+    # swallows the rest of the document.
+    cs_list() { printf '%s' "$COMPOSIO_JSON" | python3 -c "
+import json,sys
+try: print(','.join(json.load(sys.stdin).get(sys.argv[1]) or []))
+except Exception: print('')" "$1"; }
+    TOOLKITS="$(cs_list toolkits_resolved)"
+    if [[ -n "$TOOLKITS" ]]; then
+      pass "composio toolkits scoped to the session: $TOOLKITS"
+    else
+      warn "no composio toolkits resolved yet — run: sudo nicks-stack-composio-session resolve"
+    fi
+    UNRES="$(cs_list toolkits_unresolved)"
+    if [[ -n "$UNRES" ]]; then
+      fail "composio toolkits UNRESOLVED: $UNRES (slug renamed upstream?)"
+    fi
+  fi
+
+  # The legacy wiring must not come back.
+  if grep -q "connect.composio.dev\|x-consumer-api-key" "$HERMES_HOME/config.yaml" 2>/dev/null; then
+    fail "config.yaml still contains the legacy Composio endpoint or x-consumer-api-key header"
+  else
+    pass "legacy Composio wiring absent (no connect.composio.dev, no x-consumer-api-key)"
   fi
 
   # A forbidden implementation reappearing is a critical regression, not a nit.

@@ -16,11 +16,16 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.0.6
+version: 1.1.0
 released: 2026-08-03
 status: frozen
 description: >-
-  v1.0.6 is a capability migration, not a platform change. Jack's Google
+  v1.1.0 migrates Composio from the legacy static MCP endpoint to the Sessions
+  API. One durable session for Jack (user_id taylor) is resumed on every gateway
+  start; session.mcp.url is re-fetched each time and rendered into a derived
+  runtime env file, and the header is x-api-key carrying COMPOSIO_API_KEY.
+  connect.composio.dev, x-consumer-api-key and COMPOSIO_CONSUMER_KEY are gone.
+  v1.0.6 was a capability migration, not a platform change. Jack's Google
   surfaces (Gmail, Calendar, Drive, Contacts) and Notion are declared
   Composio-backed; Hermes-native Google integrations are forbidden and
   verify.sh fails if one appears. AgentMail stays installed but is reserved for
@@ -76,10 +81,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.0.6
+  platform: 1.1.0
   bootstrap: 1.0.3
   update: 1.0.3
-  verify: 1.0.6
+  verify: 1.1.0
   routing: 1.0.5
   doctor: 1.0.5
   manifest: 1.0.1
@@ -130,25 +135,29 @@ identity:
 # than hardcoding a slug this repo has never verified.
 capabilities:
   gmail:
-    implementation: composio
-    toolkit: gmail                    # confirmed in skills/email/agentmail-setup
+    implementation: composio-session  # Sessions API, slug resolved at run time
+    toolkit_search: gmail
     tools: [GMAIL_LIST_THREADS, GMAIL_FETCH_EMAILS, GMAIL_FETCH_MESSAGE_BY_THREAD_ID]
     forbidden: [hermes-native-google, google-workspace, gws, himalaya]
   google_calendar:
-    implementation: composio
-    discovery: COMPOSIO_SEARCH_TOOLS  # slug not verified in this repo — resolve live
+    implementation: composio-session
+    toolkit_search: googlecalendar
+    discovery: client.toolkits.list(search=...) at session creation  # slug not verified in this repo — resolve live
     forbidden: [hermes-native-google, google-workspace, gws]
   google_drive:
-    implementation: composio
-    discovery: COMPOSIO_SEARCH_TOOLS
+    implementation: composio-session
+    toolkit_search: googledrive
+    discovery: client.toolkits.list(search=...) at session creation
     forbidden: [hermes-native-google, google-workspace, gws]
   google_contacts:
-    implementation: composio
-    discovery: COMPOSIO_SEARCH_TOOLS
+    implementation: composio-session
+    toolkit_search: googlecontacts
+    discovery: client.toolkits.list(search=...) at session creation
     forbidden: [hermes-native-google, google-workspace, gws]
   notion:
-    implementation: composio
-    discovery: COMPOSIO_SEARCH_TOOLS
+    implementation: composio-session
+    toolkit_search: notion
+    discovery: client.toolkits.list(search=...) at session creation
     forbidden: [hermes-native-notion]
   agentmail:
     implementation: agentmail-mcp     # mcp_servers.agentmail — installed, kept
@@ -156,11 +165,28 @@ capabilities:
     jack_policy: do-not-use-unless-explicitly-instructed
     reserved_for: [Outlaw OS, Anderson OS, Signl OS]
 
+# Composio Sessions (v1.1.0). One durable session for Jack, resumed on every
+# gateway start rather than re-created. The SEARCH TERMS below are resolved to
+# real toolkit slugs at run time by client.toolkits.list(search=...) — no slug
+# is hardcoded here, so a Composio rename surfaces as a loud "unresolved"
+# rather than a silently wrong slug.
+composio:
+  user_id: taylor
+  sdk_path: /opt/nicks-stack/composio-venv/lib
+  toolkits:
+    gmail: gmail
+    google_calendar: googlecalendar
+    google_drive: googledrive
+    google_contacts: googlecontacts
+    notion: notion
+
 # Implementations that must NOT appear on a Jack deployment. verify.sh checks
 # for each of these; a hit is a critical failure, not an advisory.
 forbidden_implementations:
   mcp_servers: [gmail, google, google-workspace, gws, googlecalendar, google-calendar,
                 googledrive, google-drive, google-contacts, notion]
+  # Legacy Composio wiring — must not come back.
+  config_strings: ["connect.composio.dev", "x-consumer-api-key", "COMPOSIO_CONSUMER_KEY"]
   plugins: [google, google-workspace, gws, gmail, notion]
   binaries: [gws, google-workspace]
 

@@ -899,6 +899,7 @@ install_managed "$FILES_DIR/gateway-run.sh"            "$PREFIX_BIN/hermes-gatew
 install_managed "$FILES_DIR/agentphone-bridge-run.sh"  "$PREFIX_BIN/nicks-stack-agentphone-bridge-run.sh"   0755
 install_managed "$FILES_DIR/onboard.sh"                "$PREFIX_BIN/nicks-stack-onboard.sh"                 0755
 install_managed "$FILES_DIR/op-enable.py"              "$PREFIX_BIN/nicks-stack-op-enable"                  0755
+install_managed "$FILES_DIR/scripts/platform/composio_session.py" "$PREFIX_BIN/nicks-stack-composio-session"  0755
 install_managed "$FILES_DIR/onboard-launch.sh"         "$PREFIX_BIN/nicks-stack-onboard-launch.sh"          0755
 install_managed "$FILES_DIR/telegram-pair.py"          "$PREFIX_BIN/nicks-stack-telegram-pair.py"           0755
 install_managed "$FILES_DIR/obsidian-launch"           "$PREFIX_BIN/obsidian-launch"                        0755
@@ -1226,6 +1227,36 @@ if ((${#HEALTH_FAILURES[@]} > 0)); then
   for f in "${HEALTH_FAILURES[@]}"; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$f"; done
   err "bootstrap finished with failing health checks — review the log: $LOG_FILE"
   exit 1
+fi
+
+# ==========================================================================
+# Composio Sessions SDK — its own venv, deliberately NOT Hermes' venv, so a
+# Composio dependency can never break the agent runtime.  (v1.1.0)
+# ==========================================================================
+COMPOSIO_VENV="${STACK_ROOT}/composio-venv"
+if [[ -x "$COMPOSIO_VENV/bin/python" ]] && "$COMPOSIO_VENV/bin/python" -c 'import composio' 2>/dev/null; then
+  skip "composio SDK already installed ($COMPOSIO_VENV)"
+else
+  info "installing the composio SDK into $COMPOSIO_VENV"
+  if python3 -m venv "$COMPOSIO_VENV" >/dev/null 2>&1 \
+     && "$COMPOSIO_VENV/bin/pip" install -q --disable-pip-version-check composio >/dev/null 2>&1; then
+    ok "composio SDK installed"
+    CHANGES=$((CHANGES + 1))
+  else
+    # Non-fatal: the gateway still starts, it just has no Composio tools.
+    warn "could not install the composio SDK — Composio Sessions will be unavailable"
+  fi
+fi
+
+# Mint/resume Jack's Composio session now so the first gateway start is warm.
+# Never fatal, and it prints presence only — no key, no URL.
+if [[ -x "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
+  if "$PREFIX_BIN/nicks-stack-composio-session" init; then
+    ok "composio session ready"
+  else
+    info "composio session not established yet — add COMPOSIO_API_KEY, then:"
+    info "  sudo nicks-stack-composio-session init"
+  fi
 fi
 
 # ==========================================================================

@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.0.6 — frozen.** From here the work is agent identity and company
+**Platform v1.1.0 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,118 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.0 — Composio Sessions replaces the legacy static MCP endpoint
+
+**What was wrong.** The config used the legacy static wiring —
+`connect.composio.dev/mcp` + `x-consumer-api-key: ${COMPOSIO_CONSUMER_KEY}`.
+That endpoint answered 401 and enumerated zero toolkits. The current model is
+the **Sessions API**.
+
+**The audit (installed SDK, not documentation).** `composio 0.18.1` was
+installed and introspected; every method below came from the package, not a
+doc page:
+
+| What | Verified surface |
+|---|---|
+| Entry point | `composio.sessions` → `ToolRouter`. `composio.tool_router` is a **deprecated alias** since 0.17.0 |
+| Create | `sessions.create(*, user_id, toolkits=[...], mcp=True)` → `ToolRouterSessionWithMcp` |
+| Resume | `sessions.use(session_id, *, mcp=True)` |
+| Durable id | `session.session_id` (**not** `.id`) |
+| Endpoint | `session.mcp` → `ToolRouterMCPServerConfig(type, url, headers)`, type ∈ `http`/`sse` |
+| Slug resolution | `client.toolkits.list(search=…, limit=…)` |
+
+**Rotation — answered from SDK source, not assumed.** In
+`ToolRouter._create_mcp_server_config`:
+
+```python
+headers={"x-api-key": self._client.api_key}
+```
+
+`session.mcp.headers` is built **client-side from `COMPOSIO_API_KEY`**. It is
+not a server-issued bearer token and **does not rotate**. Only `session.mcp.url`
+comes from the server. So the design re-fetches the URL on **every gateway
+start** by resuming the persisted session — URL expiry can never strand the
+agent, and no refresh daemon is needed.
+
+**How the URL reaches Hermes.** `hermes-gateway-run.sh` already sources
+`/root/.env` and `~/.hermes/.env` before exec'ing the gateway. It now also runs
+`nicks-stack-composio-session init` and sources one derived file. `config.yaml`
+became:
+
+```yaml
+composio:
+  url: ${COMPOSIO_MCP_URL}          # from ~/.hermes/composio/mcp.env, re-minted each start
+  headers:
+    x-api-key: ${COMPOSIO_API_KEY}  # exactly what session.mcp.headers contains
+```
+
+Env expansion inside a `url:` was already proven by the `ideabrowser` server.
+
+**Toolkit slugs are resolved, never invented.** `platform.yaml` declares
+*search terms*; `client.toolkits.list(search=…)` resolves each to a real slug at
+session creation, and an unresolvable one is a loud failure, not a silent wrong
+slug.
+
+| File | Role |
+|---|---|
+| `~/.hermes/composio/session.json` | the durable session id — resumed, never re-created |
+| `~/.hermes/composio/mcp.env` | derived, 0600, regenerated every gateway start |
+
+Both live in a **derived** tree: `update.sh` excludes `composio/` from the
+preserved-data proof (`DERIVED_TREES=(profiles composio)`), so a re-minted URL
+never trips "preserved data regressed", and rollback behaviour is unchanged.
+
+**Retired:** `COMPOSIO_CONSUMER_KEY`, `x-consumer-api-key`, and the hardcoded
+`connect.composio.dev/mcp`. `verify.sh` **fails** if any of them reappear.
+**AgentMail is untouched** — still installed, still reserved.
+
+#### Diagnostics
+
+```bash
+sudo nicks-stack-composio-session status         # six facts, presence only
+sudo nicks-stack-composio-session status --json
+sudo nicks-stack-composio-session resolve        # capability -> real slug
+sudo bash platform/verify.sh                     # section 8b
+```
+
+Reports, separately: `COMPOSIO_API_KEY` available · SDK importable · session id
+persisted · session created/resumed · MCP url obtained · MCP headers obtained ·
+toolkits scoped. **No key, URL, header or token value is ever printed.**
+
+#### Acceptance tests
+
+Mechanical first:
+
+```bash
+sudo nicks-stack-composio-session status     # all six must read ok
+sudo bash platform/verify.sh                 # section 8b green
+sudo jack doctor | sed -n '/^Identity/,/^Companies/p'
+sudo grep -c 'connect.composio.dev\|x-consumer-api-key' /root/.hermes/config.yaml   # must be 0
+```
+
+Then behavioural — ask Jack, then check *how*:
+
+| # | Ask | Pass | Fail |
+|---|---|---|---|
+| 1 | "What emails have I missed?" | Composio Gmail tools | AgentMail, or any Google-native path |
+| 2 | "What's on my calendar tomorrow?" | Composio calendar toolkit | anything else |
+| 3 | "Find the Q3 deck in my Drive" | Composio drive toolkit | anything else |
+| 4 | "What's Mark's email address?" | Composio contacts toolkit | anything else |
+| 5 | "Add a row to my Notion CRM" | Composio notion toolkit | anything else |
+| 6 | "Catch me up on email" (fresh session) | **never** touches AgentMail | any AgentMail call |
+| 7 | "Check my AgentMail inbox" | AgentMail **is** used — explicit request | refusing to comply |
+| 8 | Unset `COMPOSIO_API_KEY`, ask for calendar | says unavailable, names the missing key | **any** Google-native fallback |
+
+Test 8 is the one that catches a silent regression — run it.
+
+#### Restart resumes, never re-creates
+
+```bash
+sudo grep -o '"session_id": "[^"]*"' /root/.hermes/composio/session.json
+sudo supervisorctl restart hermes-gateway && sleep 20
+sudo grep -o '"session_id": "[^"]*"' /root/.hermes/composio/session.json   # SAME id
+```
 
 ### v1.0.6 — capability migration: Composio-backed Google and Notion
 

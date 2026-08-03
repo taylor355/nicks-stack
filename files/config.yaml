@@ -207,7 +207,7 @@ secrets:
       AI_GATEWAY_API_KEY: op://Hermes/Hermes Agent Secrets/VERCEL_AI_GATEWAY_API_KEY
       MODEL_API_KEY: op://Hermes/Hermes Agent Secrets/META_API_KEY
       IDEABROWSER_KEY: op://Hermes/Hermes Agent Secrets/IDEABROWSER_KEY
-      COMPOSIO_CONSUMER_KEY: op://Hermes/Hermes Agent Secrets/COMPOSIO_CONSUMER_KEY
+      COMPOSIO_API_KEY: op://Hermes/Hermes Agent Secrets/COMPOSIO_API_KEY
       X_APP_ONLY_BEARER_TOKEN: op://Hermes/Hermes Agent Secrets/X_APP_ONLY_BEARER_TOKEN
     binary_path: /usr/bin/op
 _config_version: 33
@@ -405,11 +405,20 @@ mcp_servers:
       ORGO_API_KEY: ${ORGO_API_KEY}
       ORGO_DEFAULT_COMPUTER_ID: ${ORGO_DEFAULT_COMPUTER_ID}
     enabled: true
+  # Composio Sessions (v1.1.0). The legacy static endpoint
+  # (connect.composio.dev/mcp + x-consumer-api-key + ck_ consumer key) is gone.
+  # COMPOSIO_MCP_URL is minted per session by nicks-stack-composio-session and
+  # sourced from ~/.hermes/composio/mcp.env by hermes-gateway-run.sh; the header
+  # value is the Project API key, which is exactly what the SDK puts in
+  # session.mcp.headers ({"x-api-key": <api key>}) — verified in the installed
+  # SDK, ToolRouter._create_mcp_server_config. Env expansion inside a url: is
+  # already proven by the ideabrowser server below.
   composio:
-    url: https://connect.composio.dev/mcp
+    url: ${COMPOSIO_MCP_URL}
     enabled: true
     headers:
-      x-consumer-api-key: ${COMPOSIO_CONSUMER_KEY}
+      x-api-key: ${COMPOSIO_API_KEY}
+    connect_timeout: 60.0
   agentmail:
     url: https://mcp.agentmail.to/mcp
     enabled: true

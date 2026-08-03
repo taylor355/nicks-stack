@@ -117,7 +117,8 @@ cat <<'NEXT'
   • AgentCard (the agent's payment card): needs AgentMail first (magic codes
       land in the inbox). Ask the agent to run its `agentcard-hermes-setup`
       skill — it completes the OAuth itself (hermes mcp login agent-cards).
-  • Composio (1000+ apps): COMPOSIO_CONSUMER_KEY (ck_…) from app.composio.dev.
+  • Composio (1000+ apps): COMPOSIO_API_KEY from platform.composio.dev ->
+      Settings -> Project Settings -> API Keys (NOT the ck_ consumer key).
   • AgentPhone (SMS/iMessage): set AGENTPHONE_API_KEY + AGENTPHONE_AGENT_ID
       (+ AGENTPHONE_NUMBER_ID); the webhook bridge starts on the next resume
       — no cron. Health: curl -s localhost:8787/health

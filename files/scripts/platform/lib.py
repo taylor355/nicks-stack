@@ -1327,7 +1327,7 @@ INTEGRATIONS = [
     # name,          kind,        probe
     ("Telegram",     "chat",      lambda: key_presence("TELEGRAM_BOT_TOKEN")["present"]),
     ("1Password",    "secrets",   lambda: bool(op_token()) and have("op")),
-    ("Composio",     "mcp",       lambda: key_presence("COMPOSIO_CONSUMER_KEY")["present"]),
+    ("Composio",     "mcp",       lambda: key_presence("COMPOSIO_API_KEY")["present"]),
     ("AgentMail",    "mcp",       lambda: key_presence("AGENTMAIL_API_KEY")["present"]),
     ("AgentPhone",   "mcp",       lambda: key_presence("AGENTPHONE_API_KEY")["present"]),
     ("Latitude",     "telemetry", lambda: key_presence("LATITUDE_API_KEY")["present"]),
@@ -1378,7 +1378,7 @@ def capabilities_detect() -> dict:
     # Composio is what every declared capability routes through, so its
     # absence makes the whole matrix unusable rather than merely degraded.
     composio_wired = "composio" in mcp
-    composio_keyed = key_presence("COMPOSIO_CONSUMER_KEY")["present"]
+    composio_keyed = key_presence("COMPOSIO_API_KEY")["present"]
 
     return {
         "declared": declared,
