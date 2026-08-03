@@ -65,7 +65,8 @@ modes:
     execution: gateway-default
     tools: true
     fallback: null
-    summary: Default runtime. Business reasoning, Notion, Gmail, Calendar, Drive, CRM.
+    summary: Default runtime. Business reasoning, Notion, Gmail, Calendar, Drive, CRM
+      (all via Composio — see platform.yaml capabilities; never Hermes-native Google).
     why: >-
       Cost-conscious high quality, deliberately not the premium Opus tier. This
       is the model the gateway itself runs (config.yaml → model.default), so

@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.0.5"
+readonly SCRIPT_VERSION="1.0.6"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -603,6 +603,62 @@ PROFILECHECK
     | while IFS= read -r finding; do
         [[ -n "$finding" ]] && note "$finding"
       done
+fi
+
+# ==========================================================================
+section "8b. Capability routing (Composio-backed Google + Notion)"
+# ==========================================================================
+# Architectural decision: this agent never uses a Hermes-native Google
+# integration. Gmail, Calendar, Drive, Contacts and Notion all go through
+# Composio; AgentMail stays installed but is reserved for the business agents.
+# platform.yaml declares it; this proves the machine still matches. Names and
+# booleans only — no secret value is read.
+CAP_JSON="$(python3 "$PLATFORM_LIB" capabilities 2>/dev/null || true)"
+if [[ -z "$CAP_JSON" ]]; then
+  warn "capability routing could not be evaluated"
+else
+  cap_bool() { printf '%s' "$CAP_JSON" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p" | head -1; }
+
+  if [[ "$(cap_bool composio_wired)" == "true" ]]; then
+    pass "composio MCP server configured — the backing for every declared capability"
+  else
+    fail "composio MCP server is NOT configured — Gmail/Calendar/Drive/Contacts/Notion have no implementation"
+  fi
+  if [[ "$(cap_bool composio_credential)" == "true" ]]; then
+    pass "COMPOSIO_CONSUMER_KEY resolvable"
+  else
+    warn "COMPOSIO_CONSUMER_KEY not resolvable — Composio-backed capabilities will fail at run time"
+  fi
+
+  # A forbidden implementation reappearing is a critical regression, not a nit.
+  CAP_VIOLATIONS="$(printf '%s' "$CAP_JSON" \
+    | sed -n '/"violations"/,/\]/p' \
+    | sed -n 's/^[[:space:]]*"\(.*\)",\?$/\1/p')"
+  if [[ -z "$CAP_VIOLATIONS" ]]; then
+    pass "no Hermes-native Google/Notion implementation present"
+  else
+    while IFS= read -r v; do
+      [[ -n "$v" ]] && fail "capability routing: $v"
+    done <<< "$CAP_VIOLATIONS"
+  fi
+
+  # AgentMail must stay installed (the business agents need it) and stay
+  # reserved (Jack must not reach for it).
+  if grep -q "agentmail" "$HERMES_HOME/config.yaml" 2>/dev/null; then
+    note "AgentMail MCP still installed — reserved for the autonomous business agents"
+  else
+    warn "AgentMail MCP is absent — it is meant to remain installed for future business agents"
+  fi
+  if grep -q "reserved" "$HERMES_HOME/platform.yaml" 2>/dev/null; then
+    pass "AgentMail declared reserved in platform.yaml"
+  else
+    warn "platform.yaml does not declare AgentMail reserved"
+  fi
+  if grep -qi "Composio" "$HERMES_HOME/SOUL.md" 2>/dev/null; then
+    pass "SOUL.md carries the capability-routing rule into the agent prompt"
+  else
+    fail "SOUL.md does not mention Composio — the agent has not been told the routing rule"
+  fi
 fi
 
 # ==========================================================================

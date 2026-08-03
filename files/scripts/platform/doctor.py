@@ -247,6 +247,24 @@ def section_identity(out: Out, state: dict) -> None:
     else:
         out.item("SOUL.md", "missing", "bad")
 
+    # Declared capability routing, and whether the machine still matches it.
+    cap = state.get("capabilities") or {}
+    declared = cap.get("declared") or {}
+    if declared:
+        out.line()
+        out.line("  capability routing (declared in platform.yaml):")
+        for name, entry in declared.items():
+            impl = (entry or {}).get("implementation", "?")
+            status = (entry or {}).get("status")
+            label = f"  {name}"
+            value = impl + (f"  ({status})" if status else "")
+            if impl == "composio" and not cap.get("composio_wired"):
+                out.item(label, f"{value} — composio MCP not configured", "bad")
+            else:
+                out.item(label, value, "ok" if status != "reserved" else "info")
+        for v in cap.get("violations") or []:
+            out.item("  FORBIDDEN", v, "bad")
+
 
 def section_companies(out: Out, state: dict) -> None:
     out.section("Companies")

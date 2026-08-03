@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.0.5 — frozen.** From here the work is agent identity and company
+**Platform v1.0.6 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,63 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.0.6 — capability migration: Composio-backed Google and Notion
+
+**Decision.** Jack never uses a Hermes-native Google integration. Gmail, Google
+Calendar, Google Drive, Google Contacts and Notion all go through **Composio**.
+AgentMail stays installed but is **reserved** for the autonomous business agents
+(Outlaw, Anderson Tax, …) and is off by default for Jack.
+
+**Audit result — read this first.** There was no Hermes-native Google
+implementation to remove. The repository has **no** `gws` or `google-workspace`
+CLI, **no** Google MCP server, **no** Google plugin in `plugins.enabled`, and no
+`GOOGLE_*` key in the env contract. The only Google-adjacent entry is
+`providers.gemini`, which is a *model provider* and out of scope. The three
+`gws` / "Google Workspace" hits are prose in research and troubleshooting notes,
+two of which already say not to use it.
+
+What did exist were **assumptions**, and those are what changed:
+
+| Was | Now |
+|---|---|
+| `SOUL.md`: "Your email inbox is `AGENTMAIL_INBOX` … via the agentmail MCP" | Capability-routing section: Google + Notion via Composio; AgentMail reserved |
+| Email skill: "you MUST check BOTH mail sources … AgentMail alone is NEVER sufficient" | Composio Gmail is the source; AgentMail only on explicit instruction |
+| Nothing declared which implementation backs which capability | `platform.yaml` → `capabilities` |
+| Nothing prevented a Google-native path being added later | `platform.yaml` → `forbidden_implementations`, enforced by verify.sh |
+
+#### Capability matrix
+
+| Capability | Implementation | Reached via | Forbidden |
+|---|---|---|---|
+| **Gmail** | Composio | toolkit `gmail` — `GMAIL_LIST_THREADS`, `GMAIL_FETCH_EMAILS`, `GMAIL_FETCH_MESSAGE_BY_THREAD_ID` | Hermes-native Google, `google-workspace`/`gws`, himalaya |
+| **Google Calendar** | Composio | `COMPOSIO_SEARCH_TOOLS` (slug resolved live) | Hermes-native Google, `google-workspace`/`gws` |
+| **Google Drive** | Composio | `COMPOSIO_SEARCH_TOOLS` (slug resolved live) | Hermes-native Google, `google-workspace`/`gws` |
+| **Google Contacts** | Composio | `COMPOSIO_SEARCH_TOOLS` (slug resolved live) | Hermes-native Google, `google-workspace`/`gws` |
+| **Notion** | Composio | `COMPOSIO_SEARCH_TOOLS` (slug resolved live) | Hermes-native Notion |
+| **AgentMail** | `mcp_servers.agentmail` — installed, kept | MCP `list_threads` etc. | **Reserved** — Jack must not use it unless explicitly instructed |
+
+Only Composio identifiers actually confirmed in this repository are named
+(`gmail`, `agent_mail`, the `GMAIL_*` / `AGENT_MAIL_*` tools). Calendar, Drive,
+Contacts and Notion resolve their toolkit at run time with
+`COMPOSIO_SEARCH_TOOLS` rather than hardcoding a slug this repo has never
+verified.
+
+#### Where it is enforced
+
+1. `files/platform.yaml` → `capabilities` + `forbidden_implementations` — the declaration.
+2. `files/SOUL.md` → capability-routing section — carries the rule into Jack's prompt.
+3. `files/skills/email/agentmail-setup/SKILL.md` — Composio Gmail is the source; AgentMail gated.
+4. `platform/verify.sh` section 8b — **fails** if a forbidden MCP server, plugin or binary appears.
+5. `jack doctor` → Identity section — renders the matrix and flags violations.
+
+```bash
+sudo jack doctor                 # Identity section shows the matrix
+sudo bash platform/verify.sh     # section 8b enforces it
+python3 /root/.hermes/scripts/platform/lib.py capabilities   # machine-readable
+```
+
+Nothing about routing, providers, profiles or the runtime changed.
 
 ### v1.0.5 — stop starting Hermes to read configuration
 
@@ -1022,6 +1079,9 @@ sudo supervisorctl reread && sudo supervisorctl update
 | `jack profiles` shows validation with the same counts as gateway | `profiles.use.validation` points at `gateway`, or `routing.yaml` has no `profiles:` block | Set `profiles.use.validation: validation` in `routing.yaml` and redeploy |
 | `jack profiles` shows the profile unusable | `profiles.selection` in `routing.yaml` names an unknown layout, or the config file it points at is missing | `sudo jack profiles --rebuild`; valid values are `profile-var`, `hermes-home`, `home-root` |
 | `hermes config get <key>` is slow and starts MCP/Telegram | Upstream Hermes CLI behaviour: the CLI completes full startup before printing a config value | Not a platform bug and not worked around. Read `~/.hermes/config.yaml` (or `jack profiles --json`) instead of asking the CLI |
+| `jack doctor`: "FORBIDDEN mcp_servers.X is configured" | A Hermes-native Google/Notion integration was added | Remove it from `config.yaml`; the capability belongs to Composio (`platform.yaml` → `capabilities`) |
+| Jack reaches for AgentMail on personal mail | An older `SOUL.md` or email skill is deployed | `sudo bash platform/update.sh`; `SOUL.md` must contain the capability-routing section |
+| A Composio-backed capability fails | Composio not connected, or the app not linked in Composio | Check `COMPOSIO_CONSUMER_KEY`, then connect the app in Composio. Do **not** substitute a Google-native path |
 | MCP auth warnings continue after a platform command exits | Pre-v1.0.5: killing `hermes` orphaned its MCP server children | Fixed — hermes children run in their own process group and are reaped as a group. If seen on v1.0.5+, the warnings are the long-running gateway's, not a leftover probe |
 | Validation still resolves AgentMail/GitHub/Telegram/etc. | The profile is not being honoured, or was built before the fix | `sudo jack profiles --rebuild` then `sudo jack profiles`; the state column must read "isolated via …" |
 | OpenRouter returns HTTP 402 during validation | An uncapped request — OpenRouter charges against maximum possible cost | Use the default capped path (`nicks-stack-provider-doctor` with no `--via`). `--via hermes` cannot be capped and can 402 on a low-credit account |

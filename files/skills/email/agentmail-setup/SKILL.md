@@ -1,7 +1,7 @@
 ---
 name: agentmail-setup
-description: Set up AgentMail direct and through Composio; diagnose send blocks, bounce suppression, and inbound vs outbound delivery failures.
-version: 0.3.2
+description: Set up AgentMail direct and through Composio; diagnose send blocks, bounce suppression, and inbound vs outbound delivery failures. Personal mail on a Jack deployment is Composio Gmail only — AgentMail is reserved for the autonomous business agents.
+version: 0.4.0
 author: Hermes
 metadata:
   hermes:
@@ -26,10 +26,19 @@ Also covers **Dewey outbound send policy** (always CC Nick, approval rules) and 
 - User asks why AgentMail bounced, how to unblock a recipient, or whether a missing inbound OTP is the same bounce issue.
 - User asks to **send email**, **CC Nick**, or dual-notify (email + Slack DM) about a ship/publish/heads-up.
 
-**Nick personal inbox triage — DUAL-SOURCE (+ Granola when asked) mandatory.** If the user asks “what emails have I missed / should I get back to / catch up,” you MUST check BOTH mail sources, and Granola when they also mention meetings/follow-ups:
+> **CAPABILITY ROUTING (architectural decision, 2026-08-03).** On a **Jack**
+> deployment (`platform.yaml` → `identity.name: Jack`), personal mail is
+> **Composio Gmail only**. AgentMail is installed but **reserved** for the
+> autonomous business agents (Outlaw, Anderson Tax, …) and must not be read,
+> sent or triaged unless the user explicitly asks for AgentMail in that
+> conversation. Everything below about AgentMail applies to those agents, or
+> to Jack only on explicit instruction. Never substitute a Hermes-native
+> Google integration, `google-workspace`/`gws`, or himalaya for Composio Gmail.
 
-1. **Composio Gmail FIRST** — `${OWNER_EMAIL}` via Composio `gmail` toolkit (`COMPOSIO_SEARCH_TOOLS` → `GMAIL_LIST_THREADS` / `GMAIL_FETCH_EMAILS` paginated with `page_token` + hydrate in parallel via `COMPOSIO_REMOTE_WORKBENCH` ThreadPoolExecutor). Primary human mail. 200+ unread is normal; filter noisy senders (openrouter receipts, Mia watchdog alerts, Latitude, otter/fireflies/riverside, xfinity, slacks, linkedin). See `references/personal-gmail-triage-via-composio.md`.
-2. **AgentMail SECOND** — `dewey@`, `orgo@`, `org@`, `momentum-amp@`, `ideabrowser@`, `alex_stbl@` via MCP `list_threads`. OTP/card noise usually; surface real human leads and vendor support. AgentMail alone is NEVER sufficient.
+**Personal inbox triage.** If the user asks “what emails have I missed / should I get back to / catch up,” use Composio Gmail, and Granola when they also mention meetings/follow-ups:
+
+1. **Composio Gmail — the source.** `${OWNER_EMAIL}` via Composio `gmail` toolkit (`COMPOSIO_SEARCH_TOOLS` → `GMAIL_LIST_THREADS` / `GMAIL_FETCH_EMAILS` paginated with `page_token` + hydrate in parallel via `COMPOSIO_REMOTE_WORKBENCH` ThreadPoolExecutor). Primary human mail. 200+ unread is normal; filter noisy senders (openrouter receipts, Mia watchdog alerts, Latitude, otter/fireflies/riverside, xfinity, slacks, linkedin). See `references/personal-gmail-triage-via-composio.md`.
+2. **AgentMail — ONLY when explicitly asked** (for Jack; it is the normal inbox for a business agent) — `dewey@`, `orgo@`, `org@`, `momentum-amp@`, `ideabrowser@`, `alex_stbl@` via MCP `list_threads`. OTP/card noise usually; surface real human leads and vendor support. On a Jack deployment this step is skipped by default.
 3. **Granola MCP (when meetings / follow-ups mentioned)** — Composio toolkit `granola_mcp`. Prefer `GRANOLA_MCP_QUERY_GRANOLA_MEETINGS` for Nick-owned action items. List ranges **serially** (`this_week` / `last_week` / `last_30_days`) — parallel triple list often returns `Rate limit exceeded`.
 
 User correction “why not check composio” = first-class skill signal. Next session must start with both mail sources.

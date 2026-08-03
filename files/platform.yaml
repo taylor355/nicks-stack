@@ -16,10 +16,17 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.0.5
+version: 1.0.6
 released: 2026-08-03
 status: frozen
 description: >-
+  v1.0.6 is a capability migration, not a platform change. Jack's Google
+  surfaces (Gmail, Calendar, Drive, Contacts) and Notion are declared
+  Composio-backed; Hermes-native Google integrations are forbidden and
+  verify.sh fails if one appears. AgentMail stays installed but is reserved for
+  the autonomous business agents and is off by default for Jack. The decision
+  lives in platform.yaml (capabilities), is carried into the agent prompt by
+  SOUL.md, and is enforced by verify.sh section 8b.
   v1.0.5 removes the last place the platform started Hermes to read
   configuration. On this Hermes a `config get` is not a cheap file read: the
   CLI completes its full startup (resolve every op:// reference, load plugins,
@@ -69,10 +76,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.0.5
+  platform: 1.0.6
   bootstrap: 1.0.3
   update: 1.0.3
-  verify: 1.0.5
+  verify: 1.0.6
   routing: 1.0.5
   doctor: 1.0.5
   manifest: 1.0.1
@@ -104,6 +111,58 @@ identity:
   note: >-
     Identity work has not started. SOUL.md currently holds the stack's stock
     persona. Building Jack's identity is the first post-freeze sprint.
+
+# ==========================================================================
+# Capability routing — ARCHITECTURAL DECISION (2026-08-03)
+# ==========================================================================
+# Jack NEVER uses Hermes-native Google integrations. Every Google surface and
+# Notion goes through Composio. AgentMail stays installed for the future
+# autonomous business agents and is off-limits to Jack unless he is explicitly
+# told to use it in that conversation.
+#
+# This block is the enforceable statement of that decision: `jack doctor` reads
+# it, platform/verify.sh fails if a forbidden implementation appears on the
+# machine, and SOUL.md carries the same rule into Jack's prompt.
+#
+# TOOL IDENTIFIERS: only slugs actually confirmed in this repository are named
+# here (`gmail`, `agent_mail`, the GMAIL_* / AGENT_MAIL_* tools). For the
+# others the toolkit is resolved at run time with COMPOSIO_SEARCH_TOOLS rather
+# than hardcoding a slug this repo has never verified.
+capabilities:
+  gmail:
+    implementation: composio
+    toolkit: gmail                    # confirmed in skills/email/agentmail-setup
+    tools: [GMAIL_LIST_THREADS, GMAIL_FETCH_EMAILS, GMAIL_FETCH_MESSAGE_BY_THREAD_ID]
+    forbidden: [hermes-native-google, google-workspace, gws, himalaya]
+  google_calendar:
+    implementation: composio
+    discovery: COMPOSIO_SEARCH_TOOLS  # slug not verified in this repo — resolve live
+    forbidden: [hermes-native-google, google-workspace, gws]
+  google_drive:
+    implementation: composio
+    discovery: COMPOSIO_SEARCH_TOOLS
+    forbidden: [hermes-native-google, google-workspace, gws]
+  google_contacts:
+    implementation: composio
+    discovery: COMPOSIO_SEARCH_TOOLS
+    forbidden: [hermes-native-google, google-workspace, gws]
+  notion:
+    implementation: composio
+    discovery: COMPOSIO_SEARCH_TOOLS
+    forbidden: [hermes-native-notion]
+  agentmail:
+    implementation: agentmail-mcp     # mcp_servers.agentmail — installed, kept
+    status: reserved
+    jack_policy: do-not-use-unless-explicitly-instructed
+    reserved_for: [Outlaw OS, Anderson OS, Signl OS]
+
+# Implementations that must NOT appear on a Jack deployment. verify.sh checks
+# for each of these; a hit is a critical failure, not an advisory.
+forbidden_implementations:
+  mcp_servers: [gmail, google, google-workspace, gws, googlecalendar, google-calendar,
+                googledrive, google-drive, google-contacts, notion]
+  plugins: [google, google-workspace, gws, gmail, notion]
+  binaries: [gws, google-workspace]
 
 # Company builds that will inherit this platform. Declared, not provisioned —
 # each becomes its own deployment using the same bootstrap/update/verify tools.

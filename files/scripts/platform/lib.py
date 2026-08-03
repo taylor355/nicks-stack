@@ -1349,6 +1349,46 @@ def integrations_detect() -> dict:
     return out
 
 
+def capabilities_detect() -> dict:
+    """Declared capability routing vs what is actually on the machine.
+
+    The declaration lives in platform.yaml (capabilities / forbidden_
+    implementations). This checks the machine against it: a forbidden MCP
+    server or plugin means a Hermes-native Google path has reappeared, which is
+    the thing the decision forbids. Reads YAML only — nothing is started."""
+    spec = load_yaml(PLATFORM_FILE)
+    declared = spec.get("capabilities") or {}
+    forbidden = spec.get("forbidden_implementations") or {}
+    cfg = load_yaml(CONFIG_FILE)
+
+    mcp = {n.lower() for n in (cfg.get("mcp_servers") or {})}
+    plugins = {p.lower() for p in ((cfg.get("plugins") or {}).get("enabled") or [])}
+
+    violations = []
+    for name in forbidden.get("mcp_servers") or []:
+        if name.lower() in mcp:
+            violations.append(f"mcp_servers.{name} is configured — forbidden for this agent")
+    for name in forbidden.get("plugins") or []:
+        if name.lower() in plugins:
+            violations.append(f"plugins.enabled contains '{name}' — forbidden for this agent")
+    for name in forbidden.get("binaries") or []:
+        if have(name):
+            violations.append(f"binary '{name}' is on PATH — forbidden for this agent")
+
+    # Composio is what every declared capability routes through, so its
+    # absence makes the whole matrix unusable rather than merely degraded.
+    composio_wired = "composio" in mcp
+    composio_keyed = key_presence("COMPOSIO_CONSUMER_KEY")["present"]
+
+    return {
+        "declared": declared,
+        "composio_wired": composio_wired,
+        "composio_credential": composio_keyed,
+        "violations": violations,
+        "compliant": not violations and composio_wired,
+    }
+
+
 def identity_detect() -> dict:
     spec = load_yaml(PLATFORM_FILE)
     identity = (spec.get("identity") or {})
@@ -1496,6 +1536,7 @@ def detect_all(repo: Path | str | None = None) -> dict:
         "providers": providers_detect(),
         "integrations": integrations_detect(),
         "identity": identity_detect(),
+        "capabilities": capabilities_detect(),
         "companies": companies_detect(),
         "ollama": ollama_detect(),
         "git": git_commit(repo),
@@ -1564,6 +1605,7 @@ def main() -> int:
         "git": git_commit,
         "runtime": runtime_report,
         "profiles": profile_report,
+        "capabilities": capabilities_detect,
     }
     if what not in table:
         print(f"unknown query '{what}' — one of: {', '.join(table)}", file=sys.stderr)

@@ -37,6 +37,36 @@ Hermes is the only conductor. Claude Code, Codex CLI, and Grok Build are special
 
 On co-located Orgo (`orgo-desktop`, `DISPLAY=:99`, Desktop API `:8080`): prefer **Orgo local** (`orgo-desktop-local` / `orgo-desktop` CLI / `orgo_desktop_*`) over CUA / Hermes `computer_use`. CUA is optional a11y enrichment only. Cloud Orgo MCP GUI is for other VMs and lifecycle, not same-box when local doctor is green. Web DOM work still prefers Hermes `browser_*`. Skills: `orgo-desktop-local`, then `computer-use` only if needed.
 
+## Capability routing (architectural decision — not a preference)
+
+**Google and Notion always go through Composio. Never through a Hermes-native
+Google integration.** This applies to Gmail, Google Calendar, Google Drive and
+Google Contacts, and to Notion.
+
+- Reach them with the `composio` MCP: `COMPOSIO_SEARCH_TOOLS` to find the
+  toolkit's tools, then execute them. Gmail's toolkit is `gmail`
+  (`GMAIL_LIST_THREADS`, `GMAIL_FETCH_EMAILS`, …). For Calendar, Drive,
+  Contacts and Notion, discover the toolkit with `COMPOSIO_SEARCH_TOOLS` —
+  do not assume a slug.
+- Do **not** install, enable, configure or invoke a Hermes-native Google
+  integration, a `google-workspace` / `gws` CLI, or himalaya for these. If one
+  appears to exist, treat it as a misconfiguration and say so instead of using
+  it.
+- If Composio is not connected, say the capability is unavailable and what is
+  needed (`COMPOSIO_CONSUMER_KEY`, then the app connected in Composio). Do not
+  substitute a Google-native path.
+
+**AgentMail is installed but reserved.** It belongs to the future autonomous
+business agents (Outlaw, Anderson Tax, …). Do not read, send or triage through
+AgentMail unless the user explicitly tells you to in that conversation. For the
+user's own mail, Composio Gmail is the only source.
+
+The declared matrix lives in `~/.hermes/platform.yaml` under `capabilities`.
+
 ## Your accounts
 
-Your email inbox is `AGENTMAIL_INBOX` (in `~/.hermes/.env`) via the agentmail MCP; your Telegram bot is `TELEGRAM_BOT_USERNAME`. Your payment card lives behind the agent-cards MCP. Keep a running ledger of important account facts and decisions in `~/.hermes/memories/MEMORY.md`.
+Your Telegram bot is `TELEGRAM_BOT_USERNAME`. Your payment card lives behind the
+agent-cards MCP. `AGENTMAIL_INBOX` (in `~/.hermes/.env`) exists and is
+provisioned, but per the rule above it is reserved — do not use it unless asked.
+Keep a running ledger of important account facts and decisions in
+`~/.hermes/memories/MEMORY.md`.
