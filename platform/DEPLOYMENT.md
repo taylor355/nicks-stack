@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.0.4 — frozen.** From here the work is agent identity and company
+**Platform v1.0.5 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,69 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.0.5 — stop starting Hermes to read configuration
+
+**Root cause.** On this Hermes, `hermes config get <key>` is not a file read.
+The CLI completes its full startup — resolve every `op://` reference, load
+plugins, connect MCP servers, start adapters — and *then* prints the value.
+This is **upstream Hermes CLI behaviour, not an invocation bug, not an
+environment issue, and not something to work around.** The correct response is
+to stop calling it.
+
+**Where the platform was calling it.** Every Hermes invocation in the platform,
+split by whether it needs a live runtime:
+
+| Call site | Command | Group | v1.0.5 |
+|---|---|---|---|
+| `lib.profile_measure_layout()` | `hermes config get secrets.onepassword.env` | **B — config read** | **removed**; layout is declared in `routing.yaml` and resolved by parsing files |
+| `lib.hermes_run()` ← `hermes_probe` | `hermes chat` | A — inference | kept, now process-group reaped |
+| `gateway-run.sh` | `hermes gateway run` | A — the service | unchanged |
+| `agentphone_bridge.py` | `hermes chat` | A — inference | unchanged |
+| `lib.versions_detect()` | `hermes --version` | B — but no file holds a *runtime* version | kept, 15s ceiling |
+| `bootstrap.sh`, `verify.sh` | `hermes --version` | B — install smoke test | kept |
+
+The v1.0.4 detector ran that `config get` **once per candidate layout**. A
+candidate that did not isolate loaded the **default** config, so a
+configuration read booted the entire default runtime: 21 secret resolutions
+plus MCP OAuth against Composio, Agent Cards, Linear, X, Vidiq and Latitude,
+and a Telegram adapter start. That is the log the VM was showing.
+
+**The answer, in the words you asked for: replace config reads with direct YAML
+parsing.** `profiles.selection` in `routing.yaml` now states the layout, and
+`profile_detect_layout()` resolves it by checking that the config file the
+layout points at exists. The default, `hermes-home`, is not a guess — it is
+what the VM reported (`jack profiles` → "isolated via hermes-home") before the
+call was removed. **Zero Hermes processes are started by `jack profiles`,
+`jack doctor`, `verify.sh` or `nicks-stack-provider-doctor` on their default
+paths.**
+
+**Why the doctor still hung, and why warnings outlived it.** Two separate
+causes, both in our code:
+
+1. `subprocess.run(timeout=…)` kills only the **direct child**. Hermes spawns
+   its MCP servers as its own children, so killing `hermes` left them running,
+   reparented to init and still authenticating — which is why MCP warnings kept
+   appearing after the provider doctor had exited. `hermes_run()` now uses
+   `start_new_session=True` and signals the whole process group (TERM, then
+   KILL), so nothing survives the call.
+2. The 120s per-check ceiling exists for a **cold `hermes chat`**. The default
+   validation path has been a capped HTTP call since v1.0.4, where 120s per
+   check plus `guarded()`'s +5s join across four providers is ~8 minutes of
+   apparent hang. When no Hermes leg is in play the ceiling is now 20s
+   (`API_TIMEOUT`); an explicit `--timeout` always wins.
+
+Nothing about routing, providers or profile derivation changed.
+
+```bash
+sudo jack profiles                    # no hermes process is started
+sudo nicks-stack-provider-doctor      # no hermes process is started
+sudo nicks-stack-provider-doctor --via hermes   # the one path that does start it
+```
+
+If a future Hermes changes how it selects a profile, change
+`profiles.selection` in `routing.yaml` — that is the single knob, and it is
+read from YAML.
 
 ### v1.0.4 — the profile now actually isolates, and probes are capped
 
@@ -957,7 +1020,9 @@ sudo supervisorctl reread && sudo supervisorctl update
 | `--runtime`: "1Password map is ENABLED … but no OP_SERVICE_ACCOUNT_TOKEN is reachable" | `config.yaml` has 21 `op://` references and `op read` has no token, so it prompts on `/dev/tty` once per reference | Write the token to `/root/.hermes/.op.env` (mode 600) and restart the gateway — do not raise the timeout |
 | A probe reports "[ran on the full runtime]" or "[full runtime]" | The `validation` profile could not be built or failed at startup, so the call fell back | `sudo jack profiles` shows the reason; `sudo jack profiles --rebuild` regenerates it. Validation still works meanwhile — this is a performance notice, not a failure |
 | `jack profiles` shows validation with the same counts as gateway | `profiles.use.validation` points at `gateway`, or `routing.yaml` has no `profiles:` block | Set `profiles.use.validation: validation` in `routing.yaml` and redeploy |
-| `jack profiles`: "NOT ISOLATED - hermes ignores it" | This Hermes honours none of the three selection layouts | Probes still work on the full runtime. `sudo nicks-stack-provider-doctor --runtime` lists every attempt and the reference count each produced — send that output when reporting it |
+| `jack profiles` shows the profile unusable | `profiles.selection` in `routing.yaml` names an unknown layout, or the config file it points at is missing | `sudo jack profiles --rebuild`; valid values are `profile-var`, `hermes-home`, `home-root` |
+| `hermes config get <key>` is slow and starts MCP/Telegram | Upstream Hermes CLI behaviour: the CLI completes full startup before printing a config value | Not a platform bug and not worked around. Read `~/.hermes/config.yaml` (or `jack profiles --json`) instead of asking the CLI |
+| MCP auth warnings continue after a platform command exits | Pre-v1.0.5: killing `hermes` orphaned its MCP server children | Fixed — hermes children run in their own process group and are reaped as a group. If seen on v1.0.5+, the warnings are the long-running gateway's, not a leftover probe |
 | Validation still resolves AgentMail/GitHub/Telegram/etc. | The profile is not being honoured, or was built before the fix | `sudo jack profiles --rebuild` then `sudo jack profiles`; the state column must read "isolated via …" |
 | OpenRouter returns HTTP 402 during validation | An uncapped request — OpenRouter charges against maximum possible cost | Use the default capped path (`nicks-stack-provider-doctor` with no `--via`). `--via hermes` cannot be capped and can 402 on a low-credit account |
 | `verify.sh`: "declares dir=… which is not inside /root/.hermes" | A `profiles.<name>.dir` in `routing.yaml` escapes `HERMES_HOME` | Make it relative and inside `HERMES_HOME`, e.g. `profiles/validation` |

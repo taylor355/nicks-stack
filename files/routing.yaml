@@ -223,6 +223,24 @@ providers:
 # the profile was bypassed. A profile can make validation faster; it can never
 # make it fail.
 profiles:
+  # How Hermes is told to use a profile. DECLARED, not measured (v1.0.5).
+  #
+  #   profile-var   HERMES_PROFILE=<name>, HERMES_HOME left alone
+  #   hermes-home   HERMES_HOME=<profile dir>, no profile name
+  #   home-root     HOME=<profile dir> + HERMES_HOME=<dir>/.hermes
+  #
+  # v1.0.4 discovered this by running `hermes config get` once per candidate.
+  # That was removed: on this Hermes a `config get` is NOT a cheap file read —
+  # the CLI completes its full startup (resolve every op:// reference, load
+  # plugins, connect MCP servers, start adapters) before printing the value, so
+  # a candidate that did not isolate booted the entire default runtime. The
+  # value below is what that measurement reported on the real VM
+  # (`jack profiles` -> "isolated via hermes-home"); it is now simply stated,
+  # and nothing starts Hermes to re-derive it.
+  #
+  # Change this only if the installed Hermes changes how it selects a profile.
+  selection: hermes-home
+
   # Which profile each kind of work runs in. Only unattended validation is
   # moved; anything a person asked for keeps the full runtime.
   use:

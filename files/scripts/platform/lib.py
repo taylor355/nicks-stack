@@ -637,49 +637,43 @@ def _profile_link(path: Path, spec: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# Profile selection: measured, not assumed  (v1.0.4)
+# Profile selection: DECLARED, and read from YAML only  (v1.0.5)
 # --------------------------------------------------------------------------
-# Which environment variable actually makes Hermes load a profile's config is
-# a property of the installed Hermes, and this repo documents two conventions
-# without stating which one the config loader honours:
+# v1.0.4 measured the selection layout by running
+# `hermes config get secrets.onepassword.env` once per candidate. That was the
+# wrong tool for the job: on this Hermes a `config get` is not a cheap file
+# read — the CLI performs its full startup (resolve every op:// reference,
+# load plugins, connect MCP servers, start adapters) BEFORE printing the value.
+# So a configuration read cost a complete runtime boot, and a candidate that
+# did not isolate booted the DEFAULT runtime: 21 secret resolutions, MCP OAuth
+# attempts against Composio / Agent Cards / Linear / X / Vidiq / Latitude, and
+# a Telegram adapter start. That is upstream CLI behaviour and is not something
+# to work around — the fix is to stop asking Hermes questions that a YAML file
+# already answers.
 #
-#   ~/.hermes/profiles/<name>/     named-profile layout
-#                                  (skills/…/hermes-gateway-onboarding/SKILL.md)
-#   HERMES_PROFILE                 profile-name variable
-#                                  (local-packages/latitude-telemetry-hermes/…)
-#   HERMES_HOME                    config root (gateway-run.sh, bootstrap.sh,
-#                                  scripts/orgo_desktop/client.py)
-#
-# So we stop guessing and MEASURE. Each candidate layout is applied to a real
-# `hermes config get secrets.onepassword.env` — the exact thing being isolated
-# — and the layout wins only if Hermes then reports the profile's trimmed
-# secret map instead of the default one. `hermes config get <key>` and
-# `hermes config env-path` are both documented in-repo
-# (skills/social-media/x-mcp-integration/references/announcement-research.md,
-# skills/note-taking/agent-obsidian-vault/SKILL.md). No model call is made and
-# no secret value is read: the output contains op:// reference paths only.
-#
-# If no layout isolates, that is reported as a fact and probes run on the full
-# runtime. A profile is never allowed to silently pretend.
+# The layout is therefore DECLARED in routing.yaml (profiles.selection) and
+# resolved here by parsing files, never by starting Hermes. The default,
+# `hermes-home`, is not a guess: it is what the real VM reported before this
+# call was removed. Nothing in this module starts Hermes to read configuration.
 PROFILE_LAYOUTS = ("profile-var", "hermes-home", "home-root")
 LAYOUT_STAMP = ".layout.json"
-LAYOUT_PROBE_TIMEOUT = 25
 
 
 def profile_layout_env(name: str, layout: str, path: Path) -> dict:
-    """The environment overrides for one candidate selection layout."""
+    """The environment overrides for one selection layout."""
     if layout == "profile-var":
         # Native convention: HERMES_HOME stays the real config root and the
-        # profile is named. Hermes is expected to look in HERMES_HOME/profiles/<name>/.
+        # profile is named. Hermes looks in HERMES_HOME/profiles/<name>/.
         return {"HERMES_PROFILE": name}
     if layout == "hermes-home":
         # Config-root repoint: the profile directory IS the config root, so a
-        # profile name would be meaningless and must not be set.
+        # profile name would be meaningless and must not be set. Setting both
+        # is what broke v1.0.3.
         return {"HERMES_HOME": str(path), "HERMES_PROFILE": "default"}
     if layout == "home-root":
-        # Some resolvers derive the config dir from $HOME. The profile carries
-        # a `.hermes` self-link so $HOME/.hermes/config.yaml lands on the same
-        # derived file.
+        # For a resolver that derives the config dir from $HOME. The profile
+        # carries a `.hermes` self-link so $HOME/.hermes/config.yaml lands on
+        # the same derived file.
         return {"HOME": str(path), "HERMES_HOME": str(path / ".hermes"),
                 "HERMES_PROFILE": "default"}
     return {}
@@ -699,56 +693,8 @@ def _base_child_env() -> dict:
     return env
 
 
-def _count_op_refs(text: str) -> int:
-    return len(re.findall(r"op://", text or ""))
-
-
-def profile_measure_layout(name: str, layout: str, path: Path) -> dict:
-    """Ask Hermes itself which secret map it sees under one layout.
-
-    Returns {layout, ok, refs, detail}. `refs` is the number of op://
-    references Hermes reports — the number the whole exercise is about."""
-    out = {"layout": layout, "ok": False, "refs": None, "detail": ""}
-    if not have("hermes"):
-        out["detail"] = "hermes not on PATH"
-        return out
-    env = _base_child_env()
-    env.update(profile_layout_env(name, layout, path))
-    try:
-        proc = subprocess.run(["hermes", "config", "get", "secrets.onepassword.env"],
-                              capture_output=True, text=True, check=False,
-                              stdin=subprocess.DEVNULL, env=env,
-                              timeout=LAYOUT_PROBE_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        # A non-isolating layout resolves the full map and stalls; that is
-        # itself evidence the layout did not work.
-        out["detail"] = f"timed out after {LAYOUT_PROBE_TIMEOUT}s (full map being resolved?)"
-        return out
-    except OSError as exc:
-        out["detail"] = f"could not run hermes config get: {exc}"
-        return out
-
-    blob = f"{proc.stdout}\n{proc.stderr}"
-    refs = _count_op_refs(blob)
-    out["refs"] = refs
-    if proc.returncode != 0 and refs == 0:
-        out["detail"] = scrub(proc.stderr or proc.stdout or f"exit {proc.returncode}")[:160]
-        return out
-
-    expected = profile_expected_refs(name)
-    if refs and expected and refs <= expected:
-        out["ok"] = True
-        out["detail"] = f"hermes reports {refs} op:// reference(s) — the profile's map"
-    elif refs:
-        out["detail"] = (f"hermes reports {refs} op:// reference(s), the default map "
-                         f"(profile declares {expected}) — this layout does not isolate")
-    else:
-        out["detail"] = "hermes reported no secret map — inconclusive"
-    return out
-
-
 def profile_expected_refs(name: str) -> int:
-    """How many op:// references the derived profile declares."""
+    """How many op:// references the derived profile declares. YAML only."""
     routing = load_yaml(ROUTING_FILE)
     spec = profiles_spec(routing).get(name) or {}
     derived = derive_profile_config(load_yaml(CONFIG_FILE), routing, spec)
@@ -756,62 +702,44 @@ def profile_expected_refs(name: str) -> int:
 
 
 def profile_detect_layout(name: str, force: bool = False) -> dict:
-    """Find the selection layout that actually isolates, and remember it.
+    """Which selection layout this machine uses, from routing.yaml.
 
-    Cached beside the derived config and keyed to its digest, so a rebuilt
-    profile is re-measured rather than trusted."""
+    Reads files only — it never starts Hermes. `force` is accepted so callers
+    written against v1.0.4 keep working; there is nothing to re-measure."""
     built = profile_ensure(name)
     path = built.get("path")
     if not path:
-        return {"layout": None, "isolated": False, "reason": built.get("reason", ""),
+        return {"layout": None, "isolated": False, "source": "declared",
+                "reason": built.get("reason", ""), "attempts": []}
+
+    layout = str(profiles_spec().get("selection") or "hermes-home")
+    if layout not in PROFILE_LAYOUTS:
+        return {"layout": None, "isolated": False, "source": "declared",
+                "reason": (f"routing.yaml profiles.selection='{layout}' is not one of "
+                           f"{', '.join(PROFILE_LAYOUTS)} — probes use the full runtime"),
                 "attempts": []}
-    path = Path(path)
-    stamp = path / LAYOUT_STAMP
-    digest = ""
-    try:
-        digest = (path / PROFILE_STAMP).read_text().strip()
-    except OSError:
-        pass
 
-    if not force:
-        try:
-            cached = json.loads(stamp.read_text())
-            if cached.get("digest") == digest and digest:
-                return cached
-        except (OSError, ValueError):
-            pass
+    # The only check worth making, and it needs no subprocess: does the config
+    # this layout points Hermes at actually exist?
+    target = (Path(path) / ".hermes" / "config.yaml") if layout == "home-root" \
+        else (Path(path) / "config.yaml")
+    if not target.is_file():
+        return {"layout": layout, "isolated": False, "source": "declared",
+                "reason": f"layout '{layout}' expects {target}, which is not there",
+                "attempts": []}
 
-    attempts = []
-    winner = None
-    for layout in PROFILE_LAYOUTS:
-        result = profile_measure_layout(name, layout, path)
-        attempts.append(result)
-        if result["ok"]:
-            winner = layout
-            break
-
-    report = {
-        "layout": winner,
-        "isolated": bool(winner),
-        "digest": digest,
+    return {
+        "layout": layout,
+        "isolated": True,
+        "source": "declared in routing.yaml (profiles.selection)",
         "expected_refs": profile_expected_refs(name),
-        "attempts": attempts,
-        "reason": ("measured" if winner else
-                   "no selection layout isolated the profile — probes use the full runtime"),
+        "reason": f"layout '{layout}' declared; {target} present",
+        "attempts": [],
     }
-    try:
-        stamp.write_text(json.dumps(report, indent=2) + "\n")
-        os.chmod(stamp, 0o600)
-    except OSError:
-        pass
-    return report
 
 
 def profile_env_overrides(name: str) -> dict:
-    """Environment overrides for a profile, or {} when it cannot isolate.
-
-    Returning {} is the honest outcome: the caller then runs on the full
-    runtime rather than on a profile that Hermes is quietly ignoring."""
+    """Environment overrides for a profile, or {} to use the full runtime."""
     built = profile_ensure(name)
     if not built.get("path"):
         return {}
@@ -857,21 +785,18 @@ def profile_report(name: str | None = None) -> dict:
                 op_reference_names=sorted(((derived.get("secrets") or {})
                                            .get("onepassword") or {}).get("env") or {}),
                 path=str(path) if path else "(rejected: outside HERMES_HOME)",
-                built=bool(path and (path / "config.yaml").is_file()),
             )
-            # Whether Hermes actually honours this profile is measured, not
-            # assumed — read the cached measurement, never re-run it here.
-            measured = {}
-            if path:
-                try:
-                    measured = json.loads((path / LAYOUT_STAMP).read_text())
-                except (OSError, ValueError):
-                    measured = {}
+            # Layout comes from routing.yaml and is resolved by reading
+            # files. No Hermes process is started to answer this.  (v1.0.5)
+            # This also ensures the profile, so `built` is read afterwards.
+            sel = profile_detect_layout(pname) if path else {}
             entry.update(
-                isolated=measured.get("isolated"),
-                selection_layout=measured.get("layout"),
-                isolation_detail=measured.get("reason", "not measured yet"),
-                isolation_attempts=measured.get("attempts") or [],
+                built=bool(path and (path / "config.yaml").is_file()),
+                isolated=sel.get("isolated"),
+                selection_layout=sel.get("layout"),
+                selection_source=sel.get("source", "declared"),
+                isolation_detail=sel.get("reason", ""),
+                isolation_attempts=[],
             )
         out["profiles"][pname] = entry
     if name:
@@ -908,11 +833,50 @@ def hermes_chat_cmd(prompt: str, *, source: str, model: str | None = None,
 
 
 def hermes_run(cmd: list[str], timeout: int, env: dict | None = None):
-    """subprocess.run for a hermes child, with stdin closed so nothing can
-    block waiting on a terminal that isn't there."""
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                          check=False, stdin=subprocess.DEVNULL,
-                          env=env if env is not None else hermes_child_env())
+    """Run a hermes child in its own process group and reap the WHOLE group.
+
+    v1.0.5: subprocess.run(timeout=…) kills only the direct child. Hermes
+    spawns its MCP servers as its own children, so killing `hermes` left those
+    running — reparented to init and still authenticating. That is why MCP
+    warnings (Composio, Agent Cards, Linear, X, Vidiq, Latitude) kept appearing
+    after the provider doctor had already exited.
+
+    start_new_session=True puts the child in a new process group; on timeout the
+    group is signalled, so nothing survives the call. Raises TimeoutExpired like
+    subprocess.run, so callers are unchanged."""
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdin=subprocess.DEVNULL, start_new_session=True,
+        env=env if env is not None else hermes_child_env())
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def _kill_group(proc) -> None:
+    """TERM then KILL the child's whole process group, then the child itself."""
+    import signal
+    import time
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            break
+        if sig is signal.SIGTERM:
+            time.sleep(2)
+            if proc.poll() is not None:
+                return
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 # Startup/config failures — the signatures that mean "the profile is the

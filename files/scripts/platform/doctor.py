@@ -296,11 +296,15 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--quiet", action="store_true", help="warnings and verdict only")
     ap.add_argument("--no-color", action="store_true")
-    # 120s, not 90: a cold `hermes chat` boots the whole MCP/plugin stack
-    # before it emits anything, where the running gateway is already warm.
+    # 120s covers a cold `hermes chat` (--via hermes). The default --providers
+    # leg is a capped HTTP call and is dropped to 20s below.  (v1.0.5)
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--repo", default=None)
     args = ap.parse_args()
+
+    # A capped vendor call does not need a cold-Hermes-start budget.  (v1.0.5)
+    if args.timeout == 120 and (args.via or "api") == "api":
+        args.timeout = 20
 
     if not lib.PLATFORM_FILE.is_file():
         print(f"error: platform spec not found: {lib.PLATFORM_FILE}", file=sys.stderr)

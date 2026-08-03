@@ -16,11 +16,24 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.0.4
-released: 2026-08-02
+version: 1.0.5
+released: 2026-08-03
 status: frozen
 description: >-
-  v1.0.4 fixes two validation bugs. (1) The v1.0.3 profile did not isolate:
+  v1.0.5 removes the last place the platform started Hermes to read
+  configuration. On this Hermes a `config get` is not a cheap file read: the
+  CLI completes its full startup (resolve every op:// reference, load plugins,
+  connect MCP servers, start adapters) before printing the value. v1.0.4's
+  layout detection ran one per candidate, so a configuration read booted the
+  default runtime — 21 secret resolutions and MCP OAuth against Composio,
+  Agent Cards, Linear, X, Vidiq and Latitude. That is upstream CLI behaviour
+  and is not worked around; the platform simply stops asking Hermes questions
+  a YAML file already answers. Two supporting fixes: hermes children now run in
+  their own process group and are reaped as a group (killing `hermes` used to
+  orphan its MCP servers, which kept authenticating after the doctor exited),
+  and the 120s cold-start ceiling no longer applies to the capped HTTP
+  validation path.
+  v1.0.4 fixed two validation bugs. (1) The v1.0.3 profile did not isolate:
   HERMES_HOME and HERMES_PROFILE were set together, so Hermes looked for
   profiles/validation/profiles/validation/, found nothing and fell back to the
   default config with all 21 op:// references. The selection layout is now
@@ -56,12 +69,12 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.0.4
+  platform: 1.0.5
   bootstrap: 1.0.3
   update: 1.0.3
-  verify: 1.0.4
-  routing: 1.0.4
-  doctor: 1.0.4
+  verify: 1.0.5
+  routing: 1.0.5
+  doctor: 1.0.5
   manifest: 1.0.1
 
 # Services this platform supervises. Supervisor is the init for services on

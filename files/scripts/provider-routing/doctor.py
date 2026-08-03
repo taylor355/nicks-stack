@@ -97,6 +97,13 @@ PROBE_PROMPT = "Reply with exactly: ok"
 # AgentPhone bridge — the production one-shot caller — allows 900s.
 DEFAULT_TIMEOUT = 120
 
+# The 120s above exists ONLY for a cold `hermes chat`. The default validation
+# path is a capped HTTP call to a vendor API, where 120s per check (plus
+# guarded()'s +5s join, times four providers) is ~8 minutes of apparent hang
+# for calls that should finish in seconds. When no Hermes leg is in play the
+# ceiling drops to this.  (v1.0.5)
+API_TIMEOUT = 20
+
 # Anything that looks like a credential is scrubbed before anything is printed.
 SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_\-]{12,}"),
@@ -615,19 +622,15 @@ def cmd_runtime(args) -> int:
               f"{info.get('op_references', 0):>3} op refs   ({state})")
     if validation:
         lean = (profiles.get("profiles") or {}).get(validation) or {}
-        # Measured, not assumed: this is what Hermes itself reports.  (v1.0.4)
+        # Declared in routing.yaml and resolved by reading files. Nothing here
+        # starts Hermes to answer a configuration question.  (v1.0.5)
         isolated = lean.get("isolated")
         if isolated:
-            print(f"\n  isolation        : MEASURED — layout '{lean.get('selection_layout')}', "
-                  f"hermes sees {lean.get('op_references')} op:// reference(s)")
-        elif isolated is False:
-            print(f"\n  isolation        : FAILED — {lean.get('isolation_detail')}")
-            for att in lean.get("isolation_attempts") or []:
-                print(f"      tried {att.get('layout'):<12} refs={att.get('refs')}  "
-                      f"{(att.get('detail') or '')[:60]}")
+            print(f"\n  selection layout : {lean.get('selection_layout')}  "
+                  f"({lean.get('selection_source')})")
+            print(f"  profile declares : {lean.get('op_references')} op:// reference(s)")
         else:
-            print("\n  isolation        : not measured yet — run a probe or "
-                  "`jack profiles --rebuild`")
+            print(f"\n  selection layout : UNUSABLE — {lean.get('isolation_detail')}")
         print(f"  validation runs in '{validation}': "
               f"{full.get('mcp_servers', 0) - lean.get('mcp_servers', 0)} fewer MCP server(s), "
               f"{full.get('plugins', 0) - lean.get('plugins', 0)} fewer plugin(s), "
@@ -674,6 +677,11 @@ def main() -> int:
 
     if args.runtime:
         return cmd_runtime(args)
+
+    # No cold Hermes start on this path, so do not budget for one. An explicit
+    # --timeout always wins.  (v1.0.5)
+    if args.timeout == DEFAULT_TIMEOUT and inference_mode(args) == "api":
+        args.timeout = API_TIMEOUT
 
     routing = load_yaml(ROUTING_FILE)
     if not routing:
