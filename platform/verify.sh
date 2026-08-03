@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.1"
+readonly SCRIPT_VERSION="1.1.2"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -637,11 +637,28 @@ try: v=json.load(sys.stdin).get(sys.argv[1])
 except Exception: v=None
 print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
 
-  # 1. missing Project API key
-  if [[ "$(cap_bool composio_credential)" == "true" ]]; then
-    pass "COMPOSIO_API_KEY available"
+  # 1. missing Project API key — the SAME real resolution the session manager
+  #    uses (composio_session.resolve_credential), not presence-by-declaration.
+  #    lib.key_presence() would say "present" merely because an op:// reference
+  #    is mapped, even when the vault field does not exist.
+  if [[ -n "$COMPOSIO_JSON" && "$(cs_get api_key_available)" == "True" ]]; then
+    pass "COMPOSIO_API_KEY resolves (source: $(cs_get api_key_source))"
+  elif [[ -n "$COMPOSIO_JSON" ]]; then
+    fail "COMPOSIO_API_KEY not resolvable — $(cs_get api_key_error)"
   else
-    fail "COMPOSIO_API_KEY not resolvable — no Composio session can be created"
+    fail "COMPOSIO_API_KEY status unavailable — composio_session.py not deployed"
+  fi
+
+  # 1b. the gateway's own copy: config.yaml expands ${COMPOSIO_API_KEY} from the
+  #     gateway environment, which is fed only by the derived runtime env.
+  if [[ -n "$COMPOSIO_JSON" ]]; then
+    if [[ "$(cs_get gateway_key_present)" == "True" ]]; then
+      pass "gateway will resolve \${COMPOSIO_API_KEY} from the derived runtime env"
+    elif [[ "$(cs_get config_entry_active)" == "True" ]]; then
+      fail "composio config entry is active but the runtime env carries no COMPOSIO_API_KEY — the x-api-key header would be EMPTY (silent 401)"
+    else
+      note "no gateway COMPOSIO_API_KEY (composio not active — consistent)"
+    fi
   fi
 
   if [[ -z "$COMPOSIO_JSON" ]]; then

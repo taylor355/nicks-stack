@@ -16,11 +16,19 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.1
+version: 1.1.2
 released: 2026-08-03
 status: frozen
 description: >-
-  v1.1.1 hardens the Composio Sessions integration: every failure path tears the
+  v1.1.2 fixes a credential-propagation inconsistency: the session manager could
+  resolve COMPOSIO_API_KEY through `op read` while the Hermes gateway, which
+  expands ${COMPOSIO_API_KEY} from its own environment, could not — producing a
+  valid MCP URL with an empty x-api-key header and a silent 401. The resolved
+  key is now written into the derived 0600 runtime env the gateway already
+  sources, one canonical resolver serves session init, activation, status and
+  verify.sh, and activation refuses without a usable key. Composio no longer
+  requires Hermes-wide 1Password resolution.
+  v1.1.1 hardened the Composio Sessions integration: every failure path tears the
   runtime down (mcp.env removed AND the config entry spliced out), so a stale
   endpoint cannot survive and an empty url cannot exist; strict toolkit scoping
   is the default so a resolution failure can never create an unscoped session;
@@ -88,10 +96,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.1
+  platform: 1.1.2
   bootstrap: 1.0.3
   update: 1.0.3
-  verify: 1.1.1
+  verify: 1.1.2
   routing: 1.0.5
   doctor: 1.0.5
   manifest: 1.0.1

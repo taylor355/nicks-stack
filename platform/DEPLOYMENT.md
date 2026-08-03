@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.1 — frozen.** From here the work is agent identity and company
+**Platform v1.1.2 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,56 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.2 — Composio credential propagation
+
+**The defect.** Two consumers, two independent resolution paths, only one
+guaranteed to work:
+
+- `nicks-stack-composio-session` resolved `COMPOSIO_API_KEY` via `op read`
+  directly — it ignores `secrets.onepassword.enabled`.
+- The **gateway** expands `${COMPOSIO_API_KEY}` from **its own** environment,
+  fed only by `/root/.env`, `~/.hermes/.env` and `mcp.env`. Nothing ever put
+  the key in any of them.
+
+So with the vault field present but `secrets.onepassword.enabled: false` (the
+shipped default), the session was created, the config entry injected, and the
+header expanded to **empty** → silent **401**, with `jack composio status`
+showing all ✓.
+
+| | Before | After |
+|---|---|---|
+| Key reaches the gateway | never — resolved into the session manager's memory and discarded | written to `~/.hermes/composio/mcp.env` (0600), sourced by `gateway-run.sh` before exec |
+| Activation eligibility | URL checked, header not | `activate()` **refuses** without a non-empty key |
+| `jack composio status` | `resolve_key_value` (ignores `enabled`) → ✓ | canonical `resolve_credential()` + a separate **Gateway key** row |
+| `verify.sh` | `key_presence()` — presence-by-declaration; ✓ even when the vault field is missing | same canonical result, plus a check that the gateway will resolve the header |
+| Hermes-wide 1Password | effectively required for Composio | **not required** — Composio is self-contained |
+
+`mcp.env` now holds `COMPOSIO_API_KEY`, `COMPOSIO_MCP_URL`,
+`COMPOSIO_MCP_TRANSPORT`. It stays 0600, derived, excluded from the
+preserved-data proof, never committed, never printed. The key appears in **no**
+other file: not `config.yaml` (which keeps the `${COMPOSIO_API_KEY}`
+placeholder), not `session.json`, not logs, not any command output.
+
+`stale_runtime` now also fires when the config entry is active but the runtime
+env carries no key — the exact defect, caught as a regression.
+
+#### Tests
+
+| Test | Result |
+|---|---|
+| **A** — vault field missing | `op read` fails → precise PROVISIONING error → `mcp.env` absent, config entry 0, exit 1 |
+| **B** — field exists, `enabled: false` | session created, `mcp.env` carries the key, sourcing it sets `COMPOSIO_API_KEY` in the gateway env, header non-empty |
+| Empty-header regression | key stripped from `mcp.env` → `stale_runtime: true`, `status` exit 1, verify.sh CRITICAL |
+| Secret leak | clean in init stdout/stderr, `status`, `status --json`, `resolve`, `session.json`, `config.yaml`, `jack doctor`, `lib.py capabilities`. Present only in `mcp.env` (0600), by design |
+
+#### Verify the vault field exists without printing it
+
+```bash
+sudo bash -c 'set -a; . /root/.hermes/.op.env; set +a
+op read "op://Hermes/Hermes Agent Secrets/COMPOSIO_API_KEY" >/dev/null 2>&1 \
+  && echo "vault field EXISTS" || echo "vault field MISSING"'
+```
 
 ### v1.1.1 — Composio hardening (fail closed)
 

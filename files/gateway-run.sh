@@ -36,6 +36,12 @@ set +a
 # On any failure the init tears its own runtime down — it removes mcp.env AND
 # the composio entry from config.yaml — so there is nothing stale left to
 # source and Hermes starts with no Composio server configured at all.
+#
+# mcp.env (0600) carries COMPOSIO_API_KEY as well as the URL, and is sourced
+# HERE, before the exec below. That is what makes config.yaml's
+# `x-api-key: ${COMPOSIO_API_KEY}` resolve inside the gateway process without
+# requiring Hermes-wide 1Password resolution (all 21 op:// references) to be
+# enabled just for Composio.
 if [ -x /usr/local/bin/nicks-stack-composio-session ]; then
   if /usr/local/bin/nicks-stack-composio-session init; then
     set -a
