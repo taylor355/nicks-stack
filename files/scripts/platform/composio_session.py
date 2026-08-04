@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ==========================================================================
-# Taylor AI Platform — Composio Sessions bootstrap  (v1.1.2)
+# Taylor AI Platform — Composio Sessions bootstrap  (v1.1.3)
 # ==========================================================================
 # Replaces the legacy static Composio MCP wiring
 #
