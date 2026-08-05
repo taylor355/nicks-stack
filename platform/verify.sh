@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.6"
+readonly SCRIPT_VERSION="1.1.7"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -730,8 +730,13 @@ print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
       pass "no stale composio runtime"
     fi
 
-    # 5. toolkit scope mismatch
+    # 5. toolkit scope mismatch. A DEFERRED toolkit — one platform.yaml parked
+    #    in composio.auth_configs with an empty id because Composio has no
+    #    managed OAuth app for it — is a declared narrowing, so it is reported
+    #    and not failed. Anything declared that is neither in the session nor
+    #    deferred is still a hard mismatch.
     CS_MISSING="$(cs_get toolkits_missing)"
+    CS_DEFERRED="$(cs_get toolkits_deferred)"
     if [[ -n "$CS_MISSING" ]]; then
       fail "composio toolkit scope MISMATCH — declared but not in the session: $CS_MISSING"
     else
@@ -741,6 +746,12 @@ print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
       else
         note "no composio toolkits scoped yet"
       fi
+    fi
+    if [[ -n "$CS_DEFERRED" ]]; then
+      note "composio toolkits deferred pending an auth config (declared, not a failure): $CS_DEFERRED"
+    fi
+    if [[ "$(cs_get scope_drift)" == "True" ]]; then
+      note "composio declared scope differs from the live session — the next init re-mints it"
     fi
     note "composio last verified: $(cs_get last_verified)"
   fi

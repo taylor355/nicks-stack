@@ -16,10 +16,23 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.6
-released: 2026-08-03
+version: 1.1.7
+released: 2026-08-05
 status: frozen
 description: >-
+  v1.1.7 stops one unprovisioned capability from taking the whole Composio
+  session down. googlecontacts has no Composio-MANAGED OAuth app, so naming it
+  in sessions.create returned 400 "requires auth configs but none exist and
+  cannot be auto-created" — and that 400 blocked Gmail, Calendar, Drive and
+  Notion too, all four of which ARE managed. platform.yaml now carries
+  composio.auth_configs: an empty id DEFERS that toolkit (it is omitted from the
+  session and reported as pending), a real id is passed through to
+  sessions.create(auth_configs={slug: id}). Google Contacts is deferred for MVP.
+  Strict scoping is unchanged: an unRESOLVED toolkit still fails the whole init
+  and an empty toolkit list still refuses to create an unscoped session — only a
+  declared narrowing is allowed through. session.json records a scope_key, so
+  filling in the auth config id later re-mints the session instead of silently
+  resuming the narrower one.
   v1.1.6 fixes the launcher's import ORDER. _sdk() appended the venv's
   site-packages, putting it behind Ubuntu's /usr/lib/python3/dist-packages, so a
   system copy of a shared dependency won: composio failed with "cannot import
@@ -132,10 +145,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.6
+  platform: 1.1.7
   bootstrap: 1.1.6
   update: 1.0.3
-  verify: 1.1.6
+  verify: 1.1.7
   routing: 1.0.5
   doctor: 1.0.5
   manifest: 1.0.1
@@ -203,6 +216,10 @@ capabilities:
   google_contacts:
     implementation: composio-session
     toolkit_search: googlecontacts
+    # Composio has no managed OAuth app for this toolkit. Until an auth config
+    # id is set in composio.auth_configs.googlecontacts it is omitted from the
+    # session — the other four still work.
+    status: pending-auth-config
     discovery: client.toolkits.list(search=...) at session creation
     forbidden: [hermes-native-google, google-workspace, gws]
   notion:
@@ -230,6 +247,22 @@ composio:
     google_drive: googledrive
     google_contacts: googlecontacts
     notion: notion
+
+  # Toolkits with NO Composio-managed OAuth app. Composio cannot auto-create an
+  # auth config for these, so naming one in a session returns:
+  #   400 "The following toolkits require auth configs but none exist and
+  #        cannot be auto-created: <slug>"
+  # Confirmed against Composio's managed-auth list: gmail, googlecalendar,
+  # googledrive and notion are managed; GOOGLECONTACTS is under "Requires Your
+  # Own Credentials".
+  #
+  # Leave the value EMPTY to omit that toolkit from the session (the session
+  # still creates, and the capability is reported as pending). Put an auth
+  # config id here — created at platform.composio.dev with your own Google
+  # OAuth client — and it is passed to sessions.create(auth_configs=...) and
+  # included in the session.
+  auth_configs:
+    googlecontacts: ""
 
 # Implementations that must NOT appear on a Jack deployment. verify.sh checks
 # for each of these; a hit is a critical failure, not an advisory.

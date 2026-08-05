@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ==========================================================================
-# Taylor AI Platform — Composio Sessions bootstrap  (v1.1.6)
+# Taylor AI Platform — Composio Sessions bootstrap  (v1.1.7)
 # ==========================================================================
 # Replaces the legacy static Composio MCP wiring
 #
@@ -20,6 +20,10 @@
 #                                              (.type 'http'|'sse', .url, .headers)
 #   client.toolkits.list(search=..., limit=...)
 #                                           -> slug resolution, never invented
+#   sessions.create(..., auth_configs={slug: "ac_..."})
+#                                           -> t.Dict[str, str], "mapping of
+#                                              toolkit slug to auth config ID"
+#                                              (SDK docstring, tool_router.py:731)
 #
 # ROTATION (SDK source, ToolRouter._create_mcp_server_config):
 #   headers = {"x-api-key": self._client.api_key}
@@ -61,6 +65,75 @@ def _spec() -> dict:
     """The composio block from platform.yaml (user_id + capability map)."""
     spec = lib.load_yaml(lib.PLATFORM_FILE).get("composio")
     return spec if isinstance(spec, dict) else {}
+
+
+def auth_config_map(spec: dict | None = None) -> dict:
+    """platform.yaml composio.auth_configs, normalised to lowercase keys.
+
+    Most Composio toolkits (gmail, googlecalendar, googledrive, notion) have a
+    Composio-MANAGED OAuth app, so naming them in a session is enough — Composio
+    auto-creates the auth config. A minority ship no managed app (googlecontacts
+    is one) and the session create then returns:
+
+        400 The following toolkits require auth configs but none exist and
+            cannot be auto-created: googlecontacts
+
+    This map is how the platform states, declaratively, what to do about that:
+
+        auth_configs:
+          googlecontacts: ""          -> DEFER: omit from the session
+          googlecontacts: ac_XXXX     -> INCLUDE, passing that auth config id
+
+    A key may be a toolkit slug or the capability name; both are accepted so the
+    declaration reads naturally either way.
+    """
+    raw = (spec if spec is not None else _spec()).get("auth_configs")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k).strip().lower(): str(v or "").strip() for k, v in raw.items()}
+
+
+def partition_toolkits(resolved: list, auth_map: dict) -> tuple[list, list, dict]:
+    """Split resolved toolkits into (included, deferred, auth_configs).
+
+    DEFERRED is a NARROWING that platform.yaml declared on purpose — not a
+    resolution failure and not a silent drop. The strict-scoping rule is intact:
+    a toolkit the platform asked for and could not resolve still fails the whole
+    init; a toolkit the platform explicitly parked is reported as pending.
+    """
+    included, deferred, auth_configs = [], [], {}
+    for entry in resolved:
+        slug = entry.get("slug", "")
+        cap = entry.get("capability", "")
+        keys = [k for k in (slug.lower(), str(cap).lower()) if k in auth_map]
+        if not keys:
+            included.append(entry)                    # managed auth — nothing to do
+            continue
+        value = next((auth_map[k] for k in keys if auth_map[k]), "")
+        if value:
+            auth_configs[slug] = value
+            included.append(dict(entry, auth_config="declared"))
+        else:
+            deferred.append(dict(entry, reason=(
+                "no Composio-managed OAuth app and no auth config id declared in "
+                "platform.yaml composio.auth_configs")))
+    return included, deferred, auth_configs
+
+
+def scope_key(spec: dict | None = None) -> str:
+    """A fingerprint of the DECLARED scope: toolkits + auth-config decisions.
+
+    Stored with the session so a later platform.yaml change — e.g. filling in
+    composio.auth_configs.googlecontacts once the auth config exists — forces a
+    fresh session instead of silently resuming the old, narrower one. It is a
+    pure local comparison, so it costs the gateway nothing at start.
+    """
+    spec = spec if spec is not None else _spec()
+    wanted = spec.get("toolkits") or {}
+    return json.dumps({
+        "toolkits": {str(k): str(v) for k, v in sorted(wanted.items())},
+        "auth_configs": dict(sorted(auth_config_map(spec).items())),
+    }, sort_keys=True)
 
 
 def resolve_credential() -> dict:
@@ -343,6 +416,8 @@ def cmd_init(args) -> int:
     spec = _spec()
     user_id = spec.get("user_id") or "taylor"
     wanted = spec.get("toolkits") or {}
+    auth_map = auth_config_map(spec)
+    want_key = scope_key(spec)
     strict = not args.allow_partial          # strict is the DEFAULT now
 
     cred = resolve_credential()
@@ -361,8 +436,18 @@ def cmd_init(args) -> int:
     session, mode = None, ""
 
     # 1. Resume the persisted session first — this is what stops every gateway
-    #    restart from minting a new session.
-    if stored.get("session_id") and not args.new:
+    #    restart from minting a new session. A DECLARED-SCOPE CHANGE is the one
+    #    thing that must not be resumed through: if platform.yaml now scopes a
+    #    different toolkit set, or an auth config id has appeared for a toolkit
+    #    that was previously deferred, the stored session no longer represents
+    #    the declaration and a new one is minted.
+    # A session with no recorded scope_key predates v1.1.7, so its scope cannot
+    # be compared and is re-minted once, on the same reasoning.
+    drift = bool(stored.get("session_id")) and stored.get("scope_key", "") != want_key
+    if drift:
+        print("composio: declared toolkit scope changed since the stored session "
+              "was created — creating a new session", file=sys.stderr)
+    if stored.get("session_id") and not args.new and not drift:
         try:
             session = client.sessions.use(stored["session_id"], mcp=True)
             mode = "resumed"
@@ -372,15 +457,15 @@ def cmd_init(args) -> int:
 
     # 2. Create only if there is nothing to resume.
     toolkits = stored.get("toolkits") or []
+    deferred = stored.get("deferred") or []
     if session is None:
-        toolkits, unresolved = resolve_toolkits(client, wanted)
-        slugs = [t["slug"] for t in toolkits]
+        resolved, unresolved = resolve_toolkits(client, wanted)
 
-        # FAIL CLOSED on scope. `toolkits=None` would create an UNSCOPED
+        # FAIL CLOSED on RESOLUTION. `toolkits=None` would create an UNSCOPED
         # session with every toolkit in the catalogue — a silent widening of
         # Jack's permissions. Never send it while toolkits are declared.
-        if wanted and (unresolved or not slugs):
-            names = ", ".join(u["capability"] for u in unresolved) or "all declared toolkits"
+        if wanted and unresolved:
+            names = ", ".join(u["capability"] for u in unresolved)
             teardown(f"toolkit resolution incomplete ({names}) — refusing to create an "
                      f"unscoped session")
             return 1
@@ -388,8 +473,26 @@ def cmd_init(args) -> int:
             teardown("strict mode: some toolkits unresolved")
             return 1
 
+        # DECLARED NARROWING. Toolkits with no Composio-managed OAuth app and no
+        # auth config id are omitted rather than sent — sending one returns a
+        # 400 that takes the whole session down with it, so a single unprovisioned
+        # capability would block Gmail, Calendar, Drive and Notion too.
+        toolkits, deferred, auth_configs = partition_toolkits(resolved, auth_map)
+        slugs = [t["slug"] for t in toolkits]
+        if wanted and not slugs:
+            teardown("every declared toolkit is deferred for want of an auth config — "
+                     "refusing to create an unscoped session")
+            return 1
+        if deferred:
+            print("composio: deferring " + ", ".join(
+                f"{d['capability']} ({d['slug']})" for d in deferred) +
+                " — no auth config id in platform.yaml composio.auth_configs; "
+                "the remaining toolkits are unaffected", file=sys.stderr)
+
         try:
-            session = client.sessions.create(user_id=user_id, toolkits=slugs, mcp=True)
+            session = client.sessions.create(
+                user_id=user_id, toolkits=slugs, mcp=True,
+                **({"auth_configs": auth_configs} if auth_configs else {}))
         except Exception as exc:  # noqa: BLE001
             teardown(f"session create failed: {lib.scrub(str(exc))[:160]}")
             return 1
@@ -420,13 +523,16 @@ def cmd_init(args) -> int:
         else _now(),
         "last_verified": _now(),
         "toolkits": toolkits,
+        "deferred": deferred,
+        "scope_key": want_key,
         "header_type": "x-api-key",
         "transport": transport,
     })
 
     print(f"composio: session {mode} (id persisted), MCP endpoint obtained "
           f"[url {len(url)} chars, {len(headers)} header(s)], "
-          f"{len(toolkits)} toolkit(s) scoped")
+          f"{len(toolkits)} toolkit(s) scoped"
+          + (f", {len(deferred)} deferred (pending auth config)" if deferred else ""))
     return 0
 
 
@@ -440,9 +546,24 @@ def status(live: bool = True) -> dict:
     Composio, sdk_err = _sdk()
     runtime = lib.parse_env_file(RUNTIME_ENV) if RUNTIME_ENV.is_file() else {}
     url = (runtime.get("COMPOSIO_MCP_URL") or "").strip()
-    declared = _spec().get("toolkits") or {}
+    spec = _spec()
+    declared = spec.get("toolkits") or {}
+    auth_map = auth_config_map(spec)
     resolved = [t.get("slug") for t in (stored.get("toolkits") or []) if t.get("slug")]
     resolved_caps = {t.get("capability") for t in (stored.get("toolkits") or [])}
+
+    # Deferred: declared, but parked for want of an auth config id. Read from
+    # the session when one exists; otherwise derive from platform.yaml so the
+    # pending state is visible before any session has been created.
+    if stored.get("deferred") is not None:
+        deferred = [{"capability": d.get("capability", ""), "slug": d.get("slug", ""),
+                     "reason": d.get("reason", "")} for d in (stored.get("deferred") or [])]
+    else:
+        pending = partition_toolkits(
+            [{"capability": c, "slug": str(t)} for c, t in declared.items()], auth_map)[1]
+        deferred = [{"capability": d["capability"], "slug": d["slug"],
+                     "reason": "pending auth config"} for d in pending]
+    deferred_caps = {d["capability"] for d in deferred}
 
     # Is the composio entry actually present in Hermes' config right now?
     try:
@@ -468,7 +589,13 @@ def status(live: bool = True) -> dict:
         validity, validity_detail = "absent", "no session has been created yet"
 
     # Scope mismatch: what the session holds vs what platform.yaml declares.
-    missing = sorted(set(declared) - resolved_caps) if declared else []
+    # A DEFERRED capability is not missing — the platform declared that it stays
+    # out until an auth config exists, so it is reported, not failed.
+    missing = sorted(set(declared) - resolved_caps - deferred_caps) if declared else []
+
+    # Declared scope changed since the session was minted (e.g. an auth config
+    # id was filled in). init() re-creates rather than resuming when this is set.
+    drift = bool(stored.get("session_id")) and stored.get("scope_key", "") != scope_key(spec)
 
     # The gateway reads the key from the derived env, so "will the gateway
     # have it?" is a separate, checkable fact from "can we resolve it?".
@@ -494,7 +621,10 @@ def status(live: bool = True) -> dict:
         "toolkits_declared": sorted(declared),
         "toolkits_resolved": resolved,
         "toolkits_missing": missing,
+        "toolkits_deferred": [d["capability"] for d in deferred],
+        "deferred_detail": deferred,
         "scope_ok": not missing,
+        "scope_drift": drift,
         # Stale = a runtime endpoint exists that the live check says is dead,
         # or an env/config pair that disagree.
         "stale_runtime": bool((url or config_active) and validity == "invalid")
@@ -546,11 +676,20 @@ def cmd_status(args) -> int:
         print("  (none scoped)")
     for cap in data["toolkits_missing"]:
         print(f"  {tick(False)} {cap}  (declared but NOT in the session)")
+    for d in data["deferred_detail"]:
+        print(f"  ○ {d['slug']}  ({d['capability']}: deferred, pending auth config)")
+    if data["toolkits_deferred"]:
+        print("  └ Composio has no managed OAuth app for the above. Create an auth")
+        print("    config at platform.composio.dev with your own OAuth client, then put")
+        print("    its id in platform.yaml composio.auth_configs and re-run init.")
     print()
     print("Last verified")
     print(_ts(data["last_verified"]))
     if data["stale_runtime"]:
         print("\nWARNING: stale runtime detected — run: sudo nicks-stack-composio-session init")
+    if data["scope_drift"]:
+        print("\nNOTE: platform.yaml declares a different toolkit scope than this session"
+              "\n      carries — the next init will mint a new session automatically.")
     if data["sdk_error"]:
         print(f"\nSDK: {data['sdk_error']}")
     print("\n(no secret, URL or token value is ever printed)")
@@ -616,13 +755,23 @@ def cmd_resolve(args) -> int:
     if not cred["available"] or Composio is None:
         print(f"composio: cannot resolve ({err or cred['error']})", file=sys.stderr)
         return 1
+    spec = _spec()
     client = Composio(api_key=cred["value"])
-    resolved, unresolved = resolve_toolkits(client, _spec().get("toolkits") or {})
+    resolved, unresolved = resolve_toolkits(client, spec.get("toolkits") or {})
+    included, deferred, auth_configs = partition_toolkits(resolved, auth_config_map(spec))
     if args.json:
-        print(json.dumps({"resolved": resolved, "unresolved": unresolved}, indent=2))
+        print(json.dumps({"resolved": resolved, "unresolved": unresolved,
+                          "included": included, "deferred": deferred,
+                          # ids, not secrets: an auth config id is a public
+                          # handle, but only the names are printed here.
+                          "auth_configs_declared": sorted(auth_configs)}, indent=2))
         return 0 if not unresolved else 1
-    for r in resolved:
-        print(f"  {r['capability']:<18} search={r['search']:<18} -> slug={r['slug']}")
+    for r in included:
+        extra = "  [auth config declared]" if r.get("auth_config") else ""
+        print(f"  {r['capability']:<18} search={r['search']:<18} -> slug={r['slug']}{extra}")
+    for d in deferred:
+        print(f"  {d['capability']:<18} search={d['search']:<18} -> slug={d['slug']}  "
+              f"DEFERRED ({d['reason']})")
     for u in unresolved:
         print(f"  {u['capability']:<18} search={u['search']:<18} -> UNRESOLVED ({u['error']})")
     return 0 if not unresolved else 1

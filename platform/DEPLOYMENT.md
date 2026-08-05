@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.6 — frozen.** From here the work is agent identity and company
+**Platform v1.1.7 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,64 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.7 — one unprovisioned toolkit no longer blocks the other four
+
+`sessions.create` returned:
+
+```
+400 The following toolkits require auth configs but none exist and
+    cannot be auto-created: googlecontacts
+```
+
+That 400 is fatal to the **whole** call, so a single capability with no
+credentials took Gmail, Calendar, Drive and Notion down with it.
+
+**Why only googlecontacts.** Composio splits its catalogue in two. Most toolkits
+ship with a Composio-**managed** OAuth app — Composio owns the client, so naming
+the toolkit in a session is enough and it auto-creates the auth config. `gmail`,
+`googlecalendar`, `googledrive` and `notion` are all in that set. `GOOGLECONTACTS`
+is not: it sits under *Requires Your Own Credentials*, so there is no app for
+Composio to auto-create from, and the API says so rather than guessing.
+
+Three things it is **not**: not a wrong slug (`googlecontacts` resolves fine —
+that is how the API knew to name it), not a missing user connection (this fails
+before any OAuth prompt), and not available under some other managed toolkit —
+Google Contacts appears only in the bring-your-own-credentials list.
+
+**The fix** is a declaration in `platform.yaml`, not a special case in code:
+
+```yaml
+composio:
+  auth_configs:
+    googlecontacts: ""          # empty  -> DEFER: omit from the session
+    # googlecontacts: ac_XXXX   # an id  -> INCLUDE, passing that auth config
+```
+
+An empty id defers the toolkit; a real id is passed through to
+`sessions.create(auth_configs={slug: id})` — `t.Dict[str, str]`, "mapping of
+toolkit slug to auth config ID" per the SDK's own docstring. Google Contacts is
+deferred for MVP.
+
+**Strict scoping is unchanged.** A toolkit that cannot be *resolved* still fails
+the entire init, and an empty toolkit list still refuses to create an unscoped
+session (verified: with every toolkit deferred, init exits 1 rather than sending
+`toolkits=[]`). Only a *declared* narrowing passes, and it is reported
+everywhere — `jack composio status` lists it as pending, `verify.sh` emits a
+note, and it is not counted as a scope mismatch.
+
+**Adding Contacts later.** `session.json` now records a `scope_key` fingerprint
+of the declared scope. Fill in the auth config id (created at
+platform.composio.dev with your own Google OAuth client) and the next init sees
+the drift and mints a fresh session including `googlecontacts` instead of
+silently resuming the narrower one. No other step is needed:
+
+```bash
+# after editing platform.yaml composio.auth_configs
+sudo bash platform/update.sh
+sudo nicks-stack-composio-session init
+jack composio status
+```
 
 ### v1.1.6 — import order: the venv must win over dist-packages
 
