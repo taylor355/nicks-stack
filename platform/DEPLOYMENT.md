@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.4 — frozen.** From here the work is agent identity and company
+**Platform v1.1.5 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,46 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.5 — verify the runtime path, don't reimplement it
+
+**The contradiction was real, and the verification was right.** `composio`
+pulls in compiled extensions — `pydantic_core`, `jiter`, `charset_normalizer` —
+tagged for **one CPython minor version**. So:
+
+```
+venv built with python3.11, site-packages appended by:
+  python3.11  -> OK 0.18.1
+  python3.12  -> ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'
+  python3.10  -> ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'
+<venv>/bin/python -> OK 0.18.1     (always — it is the matching interpreter)
+```
+
+`<venv>/bin/python -c "import composio"` succeeding does **not** imply the
+launcher can import it. The launcher runs under the **system** `python3` and
+appends the venv's `site-packages`; if the venv was built by a different
+interpreter, the `.so` files will not load. **The bootstrap check was not
+stricter than the runtime — it was an accurate proxy for it. The venv was
+wrong, not the check.**
+
+Three fixes:
+
+1. **Verify the exact runtime path.** Bootstrap no longer reimplements the
+   import; it runs `nicks-stack-composio-session status --offline --json` and
+   reads `sdk_importable`, which *is* `composio_session._sdk()`. Reimplementing
+   a check is how it drifts from the thing it verifies.
+2. **Never hide the reason.** The old check ended in `2>/dev/null`, which is why
+   the failure looked inexplicable. Bootstrap now prints the launcher's own
+   `sdk_error` — and that text (`pydantic_core._pydantic_core`) is the diagnosis.
+3. **Repair the real cause.** Bootstrap compares the venv's interpreter with
+   the one that runs the launcher and **rebuilds the venv** on a mismatch,
+   rather than weakening the check.
+
+Tested: matched interpreters → passes; venv rebuilt with python3.12 while the
+launcher runs 3.11 → reproduces the exact VM symptom (acceptance test passes,
+launcher reports `sdk_importable: false`); re-running bootstrap → detects
+"built by python 3.12 but the launcher runs under python 3.11", rebuilds, and
+the launcher then reports `sdk_importable: true`.
 
 ### v1.1.4 — the Composio SDK install was unreachable
 

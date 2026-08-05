@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.1.4"
+readonly SCRIPT_VERSION="1.1.5"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -1002,18 +1002,36 @@ composio_installed() {
   "$COMPOSIO_VENV/bin/python" -c "import composio" 2>/dev/null
 }
 
-# The runtime additionally imports it under the SYSTEM python (the launcher
-# appends the venv's site-packages to sys.path), so that path is checked too.
-composio_importable_by_system_python() {
-  local sp
-  sp="$(echo "$COMPOSIO_VENV"/lib/python3*/site-packages)"
-  [[ -d "$sp" ]] || return 1
-  python3 -c "import sys; sys.path.append('$sp'); import composio" 2>/dev/null
+# The runtime path is whatever the LAUNCHER does, so run the launcher rather
+# than reimplementing its import logic here. `status --offline --json` reports
+# sdk_importable, which is the result of composio_session._sdk() itself — the
+# exact code the gateway will execute. Reimplementing it is how a verification
+# drifts from the thing it claims to verify.  (v1.1.5)
+composio_runtime_ok() {
+  "$PREFIX_BIN/nicks-stack-composio-session" status --offline --json 2>/dev/null \
+    | python3 -c "import json,sys
+try: sys.exit(0 if json.load(sys.stdin).get('sdk_importable') else 1)
+except Exception: sys.exit(1)"
+}
+
+# Why the runtime path can fail even when the venv's own python succeeds:
+# composio pulls in compiled extensions (pydantic_core, jiter,
+# charset_normalizer) tagged for one CPython minor version. The launcher runs
+# under the SYSTEM python3 and appends the venv's site-packages, so if the venv
+# was built by a different interpreter the .so files will not load — while
+# <venv>/bin/python imports them perfectly. Rebuilding the venv with the
+# current python3 is the repair; weakening the check is not.
+composio_interpreter_mismatch() {
+  local venv_v sys_v
+  [[ -x "$COMPOSIO_VENV/bin/python" ]] || return 1
+  venv_v="$("$COMPOSIO_VENV/bin/python" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null)"
+  sys_v="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null)"
+  [[ -n "$venv_v" && -n "$sys_v" && "$venv_v" != "$sys_v" ]]
 }
 
 if ((COMPOSIO_REQUESTED == 0)); then
   log "Composio not requested (no composio: block, or --skip-composio) — skipping the SDK"
-elif composio_installed; then
+elif composio_installed && ! composio_interpreter_mismatch; then
   skip "composio SDK already installed ($COMPOSIO_VENV)"
 else
   info "installing the composio SDK into $COMPOSIO_VENV"
@@ -1023,6 +1041,13 @@ else
   # run). Rebuild rather than trying to pip-install with a pip that is absent.
   if [[ -d "$COMPOSIO_VENV" && ! -x "$COMPOSIO_VENV/bin/pip" ]]; then
     warn "$COMPOSIO_VENV exists but has no pip — rebuilding it"
+    rm -rf "$COMPOSIO_VENV"
+  fi
+
+  # A venv built by a different interpreter than the one that runs the launcher
+  # cannot serve it — its compiled extensions are ABI-locked to that version.
+  if composio_interpreter_mismatch; then
+    warn "$COMPOSIO_VENV was built by python $("$COMPOSIO_VENV/bin/python" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null) but the launcher runs under python $(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])') — rebuilding it"
     rm -rf "$COMPOSIO_VENV"
   fi
 
@@ -1060,12 +1085,24 @@ else
   CHANGES=$((CHANGES + 1))
 fi
 
-# The launcher runs under the SYSTEM python, so prove that path too.
-if ((COMPOSIO_REQUESTED)) && ! composio_importable_by_system_python; then
-  die "the composio SDK is installed in $COMPOSIO_VENV but the system python3
-    cannot import it from there. The launcher runs under system python3, so
-    this would fail at run time. Rebuild the venv with the same interpreter:
+# Verify the EXACT runtime path: run the launcher and read its own verdict.
+if ((COMPOSIO_REQUESTED)) && [[ -x "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
+  if composio_runtime_ok; then
+    ok "composio SDK importable by the launcher (the runtime path itself)"
+  else
+    # Never hide the reason — the exception text IS the diagnosis. A
+    # pydantic_core/jiter/charset_normalizer error means an interpreter
+    # mismatch; anything else is a genuinely broken install.
+    err "the launcher cannot import the composio SDK. Its own report:"
+    "$PREFIX_BIN/nicks-stack-composio-session" status --offline --json 2>&1 \
+      | python3 -c "import json,sys
+try: print('    ' + (json.load(sys.stdin).get('sdk_error') or 'no error reported'))
+except Exception: print('    launcher produced no parseable status')" || true
+    die "the composio SDK is installed in $COMPOSIO_VENV (its own python imports it)
+    but the launcher cannot. Rebuild the venv with the interpreter that runs the
+    launcher:
         sudo rm -rf $COMPOSIO_VENV && sudo bash platform/bootstrap.sh"
+  fi
 fi
 
 # Mint/resume Jack's Composio session now so the first gateway start is warm.
