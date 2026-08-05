@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.1.5"
+readonly SCRIPT_VERSION="1.1.6"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -1089,6 +1089,18 @@ fi
 if ((COMPOSIO_REQUESTED)) && [[ -x "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
   if composio_runtime_ok; then
     ok "composio SDK importable by the launcher (the runtime path itself)"
+    # Import ORDER, not just importability: the venv's dependency set must win
+    # over Ubuntu's /usr/lib/python3/dist-packages. A system typing_extensions
+    # shadowing the venv's is what produced
+    #   cannot import name 'Sentinel' from 'typing_extensions'
+    if "$PREFIX_BIN/nicks-stack-composio-session" deps >/dev/null 2>&1; then
+      ok "composio dependencies resolve from the venv, not dist-packages"
+    else
+      err "a system package is shadowing a Composio dependency:"
+      "$PREFIX_BIN/nicks-stack-composio-session" deps 2>&1 | sed 's/^/    /' || true
+      die "the launcher is not running under the dependency set bootstrap installed.
+    Run for detail:  sudo nicks-stack-composio-session deps"
+    fi
   else
     # Never hide the reason — the exception text IS the diagnosis. A
     # pydantic_core/jiter/charset_normalizer error means an interpreter
@@ -1376,6 +1388,8 @@ if ((COMPOSIO_REQUESTED)); then
   # health-check run too.
   health_check "composio SDK importable in its venv" \
     "$COMPOSIO_VENV/bin/python" -c "import composio"
+  health_check "composio deps resolve from the venv" \
+    "$PREFIX_BIN/nicks-stack-composio-session" deps
 fi
 
 # Informational only — these are what the onboarding is FOR.

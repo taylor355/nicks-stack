@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.5 — frozen.** From here the work is agent identity and company
+**Platform v1.1.6 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,55 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.6 — import order: the venv must win over dist-packages
+
+**My v1.1.5 minor-version diagnosis was wrong for this VM.** Both interpreters
+are 3.12.3. The real fault is import **order**.
+
+`_sdk()` did `sys.path.append(...)`, which puts the venv's site-packages at the
+**end** of `sys.path` — behind Debian's `/usr/lib/python3/dist-packages`. So a
+system copy of a shared dependency won:
+
+```
+cannot import name 'Sentinel' from 'typing_extensions'
+(/usr/lib/python3/dist-packages/typing_extensions.py)
+```
+
+composio needs the newer `typing_extensions` pip put in the venv; Ubuntu's
+shadowed it. Reproduced with a system copy planted ahead of the venv:
+
+```
+append  -> typing_extensions from .../dist-packages   (wrong)
+insert  -> typing_extensions from .../venv/site-packages, Sentinel present
+```
+
+**Inside a real venv, `dist-packages` is not on `sys.path` at all**, so
+prepending is what reproduces the venv's resolution order — the dependency set
+bootstrap actually installed. `_sdk()` now prepends, and drops any
+already-imported `dist-packages` copy of a module the venv also provides, since
+a path change cannot re-resolve something already in `sys.modules`.
+
+**Acceptance test** — new subcommand, gated on by bootstrap and `verify.sh`:
+
+```bash
+sudo nicks-stack-composio-session deps
+```
+
+```
+  ✓ typing_extensions    venv
+      /opt/nicks-stack/composio-venv/lib/python3.12/site-packages/typing_extensions.py
+      Sentinel present: True
+  ✓ pydantic             venv
+  ✓ pydantic_core        venv
+  ✓ composio             venv
+
+  verdict: all dependencies resolve from the venv
+```
+
+It discriminates: run against the v1.1.5 ordering it reports
+`✗ typing_extensions  SYSTEM/dist-packages` and exits 1; against v1.1.6 it
+passes. Verification was not downgraded — a second, stricter gate was added.
 
 ### v1.1.5 — verify the runtime path, don't reimplement it
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ==========================================================================
-# Taylor AI Platform — Composio Sessions bootstrap  (v1.1.5)
+# Taylor AI Platform — Composio Sessions bootstrap  (v1.1.6)
 # ==========================================================================
 # Replaces the legacy static Composio MCP wiring
 #
@@ -31,6 +31,8 @@
 #   composio_session.py init            resume-or-create, render the runtime env
 #   composio_session.py status [--json] diagnostics (presence only)
 #   composio_session.py resolve         resolve capability -> toolkit slugs
+#   composio_session.py deps            prove deps come from the venv, not
+#                                      Ubuntu's dist-packages
 #
 # SECRET SAFETY: the API key, the MCP URL and every header VALUE are treated as
 # secrets. This script never prints them, never logs them, and writes them only
@@ -102,20 +104,64 @@ def resolve_credential() -> dict:
     return {"available": False, "source": "unresolved", "error": error, "value": ""}
 
 
-def _sdk():
-    """Import the SDK from wherever bootstrap installed it. Returns (mod, err)."""
+def sdk_site_packages() -> list[str]:
+    """The venv site-packages directories, in glob order."""
+    out: list[str] = []
     for extra in (_spec().get("sdk_path"), "/opt/nicks-stack/composio-venv/lib"):
         if not extra:
             continue
-        for cand in Path(extra).glob("python3*/site-packages"):
-            if str(cand) not in sys.path:
-                sys.path.append(str(cand))
+        for cand in sorted(Path(extra).glob("python3*/site-packages")):
+            if str(cand) not in out:
+                out.append(str(cand))
+    return out
+
+
+def _sdk():
+    """Import the SDK under the venv's dependency set. Returns (mod, err).
+
+    v1.1.6: these paths are PREPENDED, not appended. Appending put them at the
+    END of sys.path, behind Debian's /usr/lib/python3/dist-packages, so a
+    system copy of a shared dependency won the import. Observed on the VM:
+
+        cannot import name 'Sentinel' from 'typing_extensions'
+        (/usr/lib/python3/dist-packages/typing_extensions.py)
+
+    composio needs the newer typing_extensions that pip put in the venv; the
+    Ubuntu one shadowed it. Inside a real venv, dist-packages is not on
+    sys.path at all, so prepending is what reproduces the venv's resolution
+    order — the dependency set bootstrap actually installed.
+
+    Modules already imported from outside the venv cannot be re-resolved by a
+    path change, so anything the venv supplies and that is already in
+    sys.modules from a system location is dropped first. Nothing this script
+    has imported by now (json, os, sys, pathlib, yaml via lib) is in that set,
+    but a future import here would otherwise fail silently and confusingly.
+    """
+    paths = sdk_site_packages()
+    for path in reversed(paths):           # reversed -> first glob ends up first
+        if path in sys.path:
+            sys.path.remove(path)
+        sys.path.insert(0, path)
+
+    if paths:
+        # Drop system-resolved copies of anything the venv provides, so the
+        # prepended path is actually consulted.
+        for name in list(sys.modules):
+            mod = sys.modules.get(name)
+            origin = getattr(mod, "__file__", "") or ""
+            if origin and "dist-packages" in origin:
+                base = name.split(".")[0]
+                if any(Path(p, base).exists() or Path(p, base + ".py").exists()
+                       for p in paths):
+                    del sys.modules[name]
+
     try:
         from composio import Composio  # noqa: PLC0415
         return Composio, ""
     except ImportError as exc:
-        return None, (f"composio SDK not importable ({exc}) — the venv is missing "
-                      f"or was not built from this python3. Rebuild with: "
+        return None, (f"composio SDK not importable ({exc}) — the venv is missing, "
+                      f"was built by a different python3, or a system package is "
+                      f"shadowing a dependency. Rebuild with: "
                       f"sudo rm -rf /opt/nicks-stack/composio-venv && "
                       f"sudo bash platform/bootstrap.sh")
 
@@ -512,6 +558,58 @@ def cmd_status(args) -> int:
                  and data["gateway_key_present"]) else 1
 
 
+def cmd_deps(args) -> int:
+    """Prove the SDK and its critical dependencies resolve from the VENV, not
+    from Ubuntu's /usr/lib/python3/dist-packages.  (v1.1.6)
+
+    This is the acceptance test for the import-order fix: typing_extensions in
+    particular must come from the venv, because the system copy lacks the
+    Sentinel symbol composio needs."""
+    Composio, err = _sdk()               # applies the path ordering
+    paths = sdk_site_packages()
+    checks, ok_all = [], True
+
+    for name in ("typing_extensions", "pydantic", "pydantic_core", "composio"):
+        try:
+            mod = __import__(name)
+        except Exception as exc:  # noqa: BLE001
+            checks.append({"module": name, "ok": False, "origin": "",
+                           "detail": f"import failed: {lib.scrub(str(exc))[:100]}"})
+            ok_all = False
+            continue
+        origin = getattr(mod, "__file__", "") or ""
+        from_venv = any(origin.startswith(p) for p in paths)
+        detail = ""
+        if name == "typing_extensions":
+            # The exact symbol whose absence broke the launcher.
+            detail = f"Sentinel present: {hasattr(mod, 'Sentinel')}"
+            if not hasattr(mod, "Sentinel"):
+                from_venv = False
+        checks.append({"module": name, "ok": from_venv, "origin": origin,
+                       "detail": detail})
+        ok_all = ok_all and from_venv
+
+    if args.json:
+        print(json.dumps({"site_packages": paths, "sdk_importable": Composio is not None,
+                          "sdk_error": err, "checks": checks, "ok": ok_all}, indent=2))
+        return 0 if ok_all and Composio is not None else 1
+
+    print("Composio dependency resolution\n")
+    print(f"  venv site-packages: {', '.join(paths) or 'none found'}\n")
+    for c in checks:
+        mark = "\u2713" if c["ok"] else "\u2717"
+        where = "venv" if c["ok"] else "SYSTEM/dist-packages or missing"
+        print(f"  {mark} {c['module']:<20} {where}")
+        if c["origin"]:
+            print(f"      {c['origin']}")
+        if c["detail"]:
+            print(f"      {c['detail']}")
+    if err:
+        print(f"\n  SDK: {err}")
+    print(f"\n  verdict: {'all dependencies resolve from the venv' if ok_all else 'A DEPENDENCY IS BEING SHADOWED BY A SYSTEM PACKAGE'}")
+    return 0 if ok_all and Composio is not None else 1
+
+
 def cmd_resolve(args) -> int:
     cred = resolve_credential()
     Composio, err = _sdk()
@@ -546,8 +644,11 @@ def main() -> int:
                    help="skip the live session-validity call")
     p = sub.add_parser("resolve", help="resolve capability -> toolkit slugs")
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("deps", help="prove dependencies resolve from the venv, not the system")
+    p.add_argument("--json", action="store_true")
     args = ap.parse_args()
-    return {"init": cmd_init, "status": cmd_status, "resolve": cmd_resolve}[args.cmd](args)
+    return {"init": cmd_init, "status": cmd_status, "resolve": cmd_resolve,
+            "deps": cmd_deps}[args.cmd](args)
 
 
 if __name__ == "__main__":

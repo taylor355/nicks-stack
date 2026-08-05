@@ -16,11 +16,19 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.5
+version: 1.1.6
 released: 2026-08-03
 status: frozen
 description: >-
-  v1.1.5 makes bootstrap verify the EXACT runtime path instead of a
+  v1.1.6 fixes the launcher's import ORDER. _sdk() appended the venv's
+  site-packages, putting it behind Ubuntu's /usr/lib/python3/dist-packages, so a
+  system copy of a shared dependency won: composio failed with "cannot import
+  name 'Sentinel' from 'typing_extensions'". The paths are now prepended, which
+  is what reproduces a real venv's resolution order (dist-packages is not on a
+  venv's sys.path at all). New `nicks-stack-composio-session deps` proves each
+  critical dependency resolves from the venv, and bootstrap and verify.sh both
+  gate on it.
+  v1.1.5 made bootstrap verify the EXACT runtime path instead of a
   reimplementation of it: it runs the launcher and reads its own sdk_importable
   verdict. It also stops suppressing the reason, and repairs the real cause of
   the reported contradiction — a venv built by a different interpreter than the
@@ -124,10 +132,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.5
-  bootstrap: 1.1.5
+  platform: 1.1.6
+  bootstrap: 1.1.6
   update: 1.0.3
-  verify: 1.1.5
+  verify: 1.1.6
   routing: 1.0.5
   doctor: 1.0.5
   manifest: 1.0.1

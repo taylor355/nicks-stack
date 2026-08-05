@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.5"
+readonly SCRIPT_VERSION="1.1.6"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -692,6 +692,12 @@ print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
     [[ "$(cs_get sdk_importable)" == "True" ]] \
       && pass "composio SDK importable by the launcher" \
       || fail "composio SDK not importable by the launcher — run: sudo bash platform/bootstrap.sh"
+    # Import ORDER: the venv must win over /usr/lib/python3/dist-packages.
+    if "$PREFIX_BIN/nicks-stack-composio-session" deps >/dev/null 2>&1; then
+      pass "composio dependencies resolve from the venv (typing_extensions.Sentinel present)"
+    else
+      fail "a system package is shadowing a Composio dependency — run: sudo nicks-stack-composio-session deps"
+    fi
 
     # 2. session invalid
     CS_VALID="$(cs_get session_validity)"
