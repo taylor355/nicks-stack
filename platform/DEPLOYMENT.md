@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.3 — frozen.** From here the work is agent identity and company
+**Platform v1.1.4 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,50 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.4 — the Composio SDK install was unreachable
+
+**Ordering bug.** The SDK install block sat at line 1296, which is *after*
+`step 16 "Summary"` and *after* this gate:
+
+```bash
+if ((${#HEALTH_FAILURES[@]} > 0)); then
+  err "bootstrap finished with failing health checks"
+  exit 1          # <-- line 1289
+fi
+```
+
+Any run with a failing health check exited there and **never reached the SDK
+install**. The launcher symlink is placed in step 12, long before — which is
+exactly the reported state: launcher works, venv left over from an older run,
+`composio` absent, and no pip error anywhere because **pip was never invoked**.
+
+| Question | Answer |
+|---|---|
+| Why didn't bootstrap install the SDK? | The block was unreachable — past the summary and behind an `exit 1` |
+| Did pip fail? | No. It was never invoked on that run |
+| Was pip never invoked? | Correct |
+| Is the package name wrong? | No — `composio` is right (`composio 0.18.1` on PyPI) |
+| Did bootstrap wrongly consider it successful? | Not in v1.1.3 — it never evaluated it. Pre-v1.1.3 *did* swallow the error with a `warn`, which is how the empty venv came to exist |
+
+**Fixes.** The block now lives in the install phase, immediately after the
+launcher symlink (before step 13). The acceptance test is exactly what was
+asked for:
+
+```bash
+/opt/nicks-stack/composio-venv/bin/python -c "import composio"
+```
+
+asserted three times — at install (bootstrap **dies** on failure), as a health
+check, and in `verify.sh`. A venv that exists without `pip` (failed
+`ensurepip`) is **rebuilt** rather than pip-installed into. The system-python
+import is still checked separately, because the launcher runs under that
+interpreter.
+
+Tested: clean install → 0.18.1; re-run → idempotent skip; **venv present but
+composio absent → installs** (the reported state); venv without pip → rebuilds;
+pip cannot reach an index → dies with the pip error; pip lies about success →
+acceptance test dies.
 
 ### v1.1.3 — Composio launcher packaging
 

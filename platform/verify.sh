@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.3"
+readonly SCRIPT_VERSION="1.1.4"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -681,9 +681,17 @@ print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
   if [[ -z "$COMPOSIO_JSON" ]]; then
     warn "composio session status unavailable (composio_session.py not deployed?)"
   else
+    # Two distinct facts, reported separately: the SDK is installed in the venv
+    # (the acceptance test), and the launcher's own interpreter can import it.
+    COMPOSIO_VENV_PY="/opt/nicks-stack/composio-venv/bin/python"
+    if [[ -x "$COMPOSIO_VENV_PY" ]] && "$COMPOSIO_VENV_PY" -c "import composio" 2>/dev/null; then
+      pass "composio SDK installed in its venv ($COMPOSIO_VENV_PY -c 'import composio')"
+    else
+      fail "composio SDK NOT installed in /opt/nicks-stack/composio-venv — run: sudo bash platform/bootstrap.sh"
+    fi
     [[ "$(cs_get sdk_importable)" == "True" ]] \
-      && pass "composio SDK importable" \
-      || fail "composio SDK not importable — run: sudo bash platform/bootstrap.sh"
+      && pass "composio SDK importable by the launcher" \
+      || fail "composio SDK not importable by the launcher — run: sudo bash platform/bootstrap.sh"
 
     # 2. session invalid
     CS_VALID="$(cs_get session_validity)"

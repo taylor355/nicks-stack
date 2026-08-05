@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.1.3"
+readonly SCRIPT_VERSION="1.1.4"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -984,6 +984,102 @@ install_managed "$FILES_DIR/NicksStackSetup.desktop"   "$DESKTOP_DIR/NicksStackS
 ok "launchers and desktop entries installed"
 
 # ==========================================================================
+# Composio Sessions SDK — installed HERE, in the install phase, immediately
+# after the launcher that needs it.
+#
+# v1.1.4: this block used to sit AFTER `step 16 "Summary"` and after the
+# `exit 1` health-failure gate. Any run with a failing health check exited
+# before reaching it, so the SDK was never installed — while the launcher
+# symlink (step 12, above) had already been placed. That is exactly the
+# reported state: launcher works, venv exists from an older run, composio
+# absent, and no pip error anywhere because pip was never invoked.
+# ==========================================================================
+COMPOSIO_VENV="${STACK_ROOT}/composio-venv"
+
+# THE acceptance test, verbatim: if this fails, the SDK is not installed.
+composio_installed() {
+  [[ -x "$COMPOSIO_VENV/bin/python" ]] || return 1
+  "$COMPOSIO_VENV/bin/python" -c "import composio" 2>/dev/null
+}
+
+# The runtime additionally imports it under the SYSTEM python (the launcher
+# appends the venv's site-packages to sys.path), so that path is checked too.
+composio_importable_by_system_python() {
+  local sp
+  sp="$(echo "$COMPOSIO_VENV"/lib/python3*/site-packages)"
+  [[ -d "$sp" ]] || return 1
+  python3 -c "import sys; sys.path.append('$sp'); import composio" 2>/dev/null
+}
+
+if ((COMPOSIO_REQUESTED == 0)); then
+  log "Composio not requested (no composio: block, or --skip-composio) — skipping the SDK"
+elif composio_installed; then
+  skip "composio SDK already installed ($COMPOSIO_VENV)"
+else
+  info "installing the composio SDK into $COMPOSIO_VENV"
+  COMPOSIO_ERR=""
+
+  # A venv with no pip is a half-built venv (ensurepip failed on a previous
+  # run). Rebuild rather than trying to pip-install with a pip that is absent.
+  if [[ -d "$COMPOSIO_VENV" && ! -x "$COMPOSIO_VENV/bin/pip" ]]; then
+    warn "$COMPOSIO_VENV exists but has no pip — rebuilding it"
+    rm -rf "$COMPOSIO_VENV"
+  fi
+
+  if [[ ! -x "$COMPOSIO_VENV/bin/python" ]]; then
+    if ! COMPOSIO_ERR="$(python3 -m venv "$COMPOSIO_VENV" 2>&1)"; then
+      err "could not create $COMPOSIO_VENV:"
+      printf '%s\n' "$COMPOSIO_ERR" | sed 's/^/    /'
+      die "Composio is required by platform.yaml but its venv could not be created.
+    Most often this is the missing python3-venv package:
+        sudo apt-get install -y python3-venv python3-pip
+    Then re-run this script, or pass --skip-composio to install without Composio."
+    fi
+    ok "created $COMPOSIO_VENV"
+  fi
+
+  if ! COMPOSIO_ERR="$("$COMPOSIO_VENV/bin/pip" install --disable-pip-version-check composio 2>&1)"; then
+    err "pip could not install the composio SDK:"
+    printf '%s\n' "$COMPOSIO_ERR" | tail -25 | sed 's/^/    /'
+    die "Composio is required by platform.yaml but the SDK could not be installed.
+    Check network/proxy egress to PyPI (pip honours HTTPS_PROXY/PIP_INDEX_URL),
+    then re-run, or pass --skip-composio."
+  fi
+
+  # THE acceptance test. Nothing below runs unless this passes.
+  if ! composio_installed; then
+    err "pip reported success but the SDK is still not importable:"
+    "$COMPOSIO_VENV/bin/python" -c "import composio" 2>&1 | sed 's/^/    /' || true
+    printf '%s\n' "$COMPOSIO_ERR" | tail -10 | sed 's/^/    pip: /'
+    die "acceptance test failed:
+        $COMPOSIO_VENV/bin/python -c \"import composio\"
+    The venv exists but the SDK is not in it. Rebuild with:
+        sudo rm -rf $COMPOSIO_VENV && sudo bash platform/bootstrap.sh"
+  fi
+  ok "composio SDK installed ($("$COMPOSIO_VENV/bin/python" -c 'import composio; print(composio.__version__)' 2>/dev/null || echo 'version unknown'))"
+  CHANGES=$((CHANGES + 1))
+fi
+
+# The launcher runs under the SYSTEM python, so prove that path too.
+if ((COMPOSIO_REQUESTED)) && ! composio_importable_by_system_python; then
+  die "the composio SDK is installed in $COMPOSIO_VENV but the system python3
+    cannot import it from there. The launcher runs under system python3, so
+    this would fail at run time. Rebuild the venv with the same interpreter:
+        sudo rm -rf $COMPOSIO_VENV && sudo bash platform/bootstrap.sh"
+fi
+
+# Mint/resume Jack's Composio session now so the first gateway start is warm.
+# Prints presence only — no key, no URL.
+if ((COMPOSIO_REQUESTED)) && [[ -x "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
+  if "$PREFIX_BIN/nicks-stack-composio-session" init; then
+    ok "composio session ready"
+  else
+    info "composio session not established yet (usually a missing COMPOSIO_API_KEY)"
+    info "  sudo nicks-stack-composio-session status"
+  fi
+fi
+
+# ==========================================================================
 # 13. Install the Supervisor services
 # ==========================================================================
 step 13 "Install the Supervisor services (hermes-gateway, agentphone-bridge)"
@@ -1238,6 +1334,11 @@ health_check "filesystem MCP helper present"    bash -c 'npm ls -g --depth=0 @mo
 if ((COMPOSIO_REQUESTED)); then
   health_check "nicks-stack-composio-session executes" bash -c \
     "'$PREFIX_BIN/nicks-stack-composio-session' status --offline --json | python3 -c 'import json,sys; json.load(sys.stdin)'"
+  # The acceptance test, verbatim. The install above already dies on failure;
+  # this re-asserts it here so a machine that drifted is caught by a plain
+  # health-check run too.
+  health_check "composio SDK importable in its venv" \
+    "$COMPOSIO_VENV/bin/python" -c "import composio"
 fi
 
 # Informational only — these are what the onboarding is FOR.
@@ -1287,69 +1388,6 @@ if ((${#HEALTH_FAILURES[@]} > 0)); then
   for f in "${HEALTH_FAILURES[@]}"; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$f"; done
   err "bootstrap finished with failing health checks — review the log: $LOG_FILE"
   exit 1
-fi
-
-# ==========================================================================
-# Composio Sessions SDK — its own venv, deliberately NOT Hermes' venv, so a
-# Composio dependency can never break the agent runtime.  (v1.1.0)
-# ==========================================================================
-COMPOSIO_VENV="${STACK_ROOT}/composio-venv"
-
-# The interpreter that MATTERS is the one that runs the launcher — the system
-# python3 — not the venv's. composio_session.py appends the venv's
-# site-packages to sys.path, so this is the import that has to succeed.
-composio_importable() {
-  local sp
-  sp="$(echo "$COMPOSIO_VENV"/lib/python3*/site-packages)"
-  [[ -d "$sp" ]] || return 1
-  python3 -c "import sys; sys.path.append('$sp'); import composio" 2>/dev/null
-}
-
-if ((COMPOSIO_REQUESTED == 0)); then
-  log "Composio not requested (no composio: block, or --skip-composio) — skipping the SDK"
-elif composio_importable; then
-  skip "composio SDK already importable by the system python ($COMPOSIO_VENV)"
-else
-  info "installing the composio SDK into $COMPOSIO_VENV"
-  COMPOSIO_ERR=""
-  if [[ ! -x "$COMPOSIO_VENV/bin/python" ]]; then
-    # Keep the real error. Discarding it is why the previous failure was invisible.
-    if ! COMPOSIO_ERR="$(python3 -m venv "$COMPOSIO_VENV" 2>&1)"; then
-      err "could not create $COMPOSIO_VENV:"
-      printf '%s\n' "$COMPOSIO_ERR" | sed 's/^/    /'
-      die "Composio is required by platform.yaml but its venv could not be created.
-    Most often this is the missing python3-venv package:
-        sudo apt-get install -y python3-venv python3-pip
-    Then re-run this script, or pass --skip-composio to install without Composio."
-    fi
-  fi
-  if ! COMPOSIO_ERR="$("$COMPOSIO_VENV/bin/pip" install --disable-pip-version-check composio 2>&1)"; then
-    err "pip could not install the composio SDK:"
-    printf '%s\n' "$COMPOSIO_ERR" | tail -20 | sed 's/^/    /'
-    die "Composio is required by platform.yaml but the SDK could not be installed.
-    Check network/proxy egress to PyPI, then re-run, or pass --skip-composio."
-  fi
-  if composio_importable; then
-    ok "composio SDK installed and importable by the system python"
-    CHANGES=$((CHANGES + 1))
-  else
-    die "the composio SDK installed into $COMPOSIO_VENV but the system python3
-    cannot import it. The launcher runs under system python3, so this would
-    fail at run time. Check that $COMPOSIO_VENV was built from the same
-    python3 (\$(python3 -V)); rebuild it with:
-        sudo rm -rf $COMPOSIO_VENV && sudo bash platform/bootstrap.sh"
-  fi
-fi
-
-# Mint/resume Jack's Composio session now so the first gateway start is warm.
-# Prints presence only — no key, no URL.
-if ((COMPOSIO_REQUESTED)) && [[ -x "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
-  if "$PREFIX_BIN/nicks-stack-composio-session" init; then
-    ok "composio session ready"
-  else
-    info "composio session not established yet (usually a missing COMPOSIO_API_KEY)"
-    info "  sudo nicks-stack-composio-session status"
-  fi
 fi
 
 # ==========================================================================
