@@ -16,10 +16,29 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.7
+version: 1.1.8
 released: 2026-08-05
 status: frozen
 description: >-
+  v1.1.8 unifies the runtime secret path and fixes "Primary provider auth
+  failed: No Anthropic credentials found." The gateway wrapper sourced only
+  /root/.env and ~/.hermes/.env, while config.yaml keeps
+  secrets.onepassword.enabled false on purpose (enabling it makes Hermes
+  resolve all 21 op:// references at startup — sequential `op read`, /dev/tty
+  prompts, cold-start stalls, MCP timeouts). A key living ONLY in the vault
+  therefore never reached the gateway process. COMPOSIO_API_KEY was the sole
+  exception because v1.1.2 gave it, and only it, a derived runtime env file.
+  That fix is now generalised: platform.yaml declares which secrets the runtime
+  needs, lib.resolve_runtime_secret is the single resolver every component uses,
+  and nicks-stack-secrets renders them into one 0600 root-owned
+  runtime/secrets.env that gateway-run.sh sources before exec. Rendering is
+  atomic and fail-closed — a missing required secret removes the file rather
+  than leaving a partial one. The Composio key is no longer stored twice:
+  mcp.env carries only the URL and transport, and activation refuses unless the
+  key is genuinely present in the rendered file, so the x-api-key header still
+  cannot expand to empty. Hermes' plaintext op_cache.json value caches are
+  purged on every render. New: `jack secrets status` (presence only, never
+  values) and verify.sh section 8a.
   v1.1.7 stops one unprovisioned capability from taking the whole Composio
   session down. googlecontacts has no Composio-MANAGED OAuth app, so naming it
   in sessions.create returned 400 "requires auth configs but none exist and
@@ -145,10 +164,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.7
-  bootstrap: 1.1.6
-  update: 1.0.3
-  verify: 1.1.7
+  platform: 1.1.8
+  bootstrap: 1.1.8
+  update: 1.1.8
+  verify: 1.1.8
   routing: 1.0.5
   doctor: 1.0.5
   manifest: 1.0.1
@@ -232,6 +251,56 @@ capabilities:
     status: reserved
     jack_policy: do-not-use-unless-explicitly-instructed
     reserved_for: [Outlaw OS, Anderson OS, Signl OS]
+
+# ==========================================================================
+# Runtime secrets (v1.1.8) — the ONE declaration of what the gateway needs
+# ==========================================================================
+# The gateway process does NOT resolve op:// references itself: config.yaml
+# keeps secrets.onepassword.enabled false on purpose, because turning it on
+# makes Hermes resolve all 21 references at startup — sequential `op read`
+# calls, /dev/tty prompts, cold-start stalls and MCP timeouts.
+#
+# That left a hole. gateway-run.sh sourced only /root/.env and ~/.hermes/.env,
+# so a key that lived ONLY in 1Password never reached the gateway at all:
+#
+#     Primary provider auth failed: No Anthropic credentials found.
+#
+# COMPOSIO_API_KEY did not have this problem, because v1.1.2 gave it — and
+# only it — a derived runtime env file. This block generalises that fix to
+# every secret the runtime actually needs, and nothing else.
+#
+# The op:// REFERENCE still comes from config.yaml secrets.onepassword.env, so
+# there is exactly one place references are declared. This block declares only
+# WHICH of them the runtime resolves, whether it is required, and who consumes
+# it. `required: true` means a failure to resolve is a hard failure.
+runtime_secrets:
+  dir: /root/.hermes/runtime          # derived tree; 0700, never committed
+  file: secrets.env                   # 0600, rebuilt on every gateway start
+  keys:
+    - env: ANTHROPIC_API_KEY
+      required: true
+      consumer: hermes-gateway (primary model provider)
+    - env: OPENROUTER_API_KEY
+      required: true
+      consumer: hermes-gateway (declared fallback provider)
+    - env: GEMINI_API_KEY
+      required: false
+      consumer: hermes-gateway (optional provider)
+    - env: COMPOSIO_API_KEY
+      required: true
+      consumer: composio session manager + gateway x-api-key header
+    - env: TELEGRAM_BOT_TOKEN
+      required: true
+      consumer: hermes-gateway (Telegram transport)
+
+  # Hermes writes resolved op:// values to a PLAINTEXT json cache when it does
+  # its own resolution. The platform never enables that, but a stale file can
+  # survive from an earlier run — it is Hermes-owned, regenerated on demand,
+  # and must not persist provider credentials in plaintext json. Purged on
+  # every render.
+  purge_plaintext_caches:
+    - /root/.hermes/cache/op_cache.json
+    - /root/.hermes/profiles/validation/cache/op_cache.json
 
 # Composio Sessions (v1.1.0). One durable session for Jack, resumed on every
 # gateway start rather than re-created. The SEARCH TERMS below are resolved to

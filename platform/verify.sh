@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.7"
+readonly SCRIPT_VERSION="1.1.8"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -606,6 +606,73 @@ PROFILECHECK
 fi
 
 # ==========================================================================
+section "8a. Unified runtime secrets (v1.1.8)"
+# ==========================================================================
+# The gateway does NOT resolve op:// references itself (config.yaml keeps
+# secrets.onepassword.enabled false on purpose). Every runtime credential
+# therefore has to arrive through the derived 0600 secrets.env. "Can we
+# resolve it?" and "will the GATEWAY see it?" are two different facts and are
+# checked separately — conflating them is what hid the Anthropic failure.
+SECRETS_JSON="$(python3 "$HERMES_HOME/scripts/platform/secrets_runtime.py" status --json 2>/dev/null || true)"
+if [[ -z "$SECRETS_JSON" ]]; then
+  fail "runtime secrets status unavailable — secrets_runtime.py not deployed; run: sudo bash platform/bootstrap.sh"
+else
+  sec_get() { printf '%s' "$SECRETS_JSON" | python3 -c "
+import json,sys
+try: v=json.load(sys.stdin).get(sys.argv[1])
+except Exception: v=None
+print(','.join(map(str,v)) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
+
+  # Per-key resolution, presence only — never a value.
+  while IFS='|' read -r K REQ AVAIL INRT ERR; do
+    [[ -n "$K" ]] || continue
+    if [[ "$AVAIL" == "True" && "$INRT" == "True" ]]; then
+      pass "$K resolves and is in the gateway runtime env"
+    elif [[ "$AVAIL" == "True" && "$REQ" == "True" ]]; then
+      fail "$K resolves but is NOT in the runtime env — the gateway will not see it; run: sudo nicks-stack-secrets render"
+    elif [[ "$REQ" == "True" ]]; then
+      fail "$K is REQUIRED and does not resolve — $ERR"
+    else
+      note "$K optional and absent"
+    fi
+  done < <(printf '%s' "$SECRETS_JSON" | python3 -c "
+import json,sys
+for k in json.load(sys.stdin).get('keys',[]):
+    print('|'.join([k['key'],str(k['required']),str(k['available']),str(k['in_runtime_env']),k['error']]))" 2>/dev/null)
+
+  [[ "$(sec_get gateway_ready)" == "True" ]] \
+    && pass "gateway will start with every required credential present" \
+    || fail "gateway would start WITHOUT a required credential — run: sudo jack secrets status"
+
+  SEC_PATH="$(sec_get path)"
+  if [[ -f "$SEC_PATH" ]]; then
+    [[ "$(sec_get mode_ok)" == "True" ]] \
+      && pass "$SEC_PATH is mode 0600" \
+      || fail "$SEC_PATH is mode $(sec_get mode), expected 0600 — it holds secrets"
+  fi
+
+  # The derived secret file must never be tracked by git.
+  if [[ -d "$STACK_ROOT/.git" ]]; then
+    if git -C "$STACK_ROOT" ls-files --error-unmatch "$SEC_PATH" >/dev/null 2>&1; then
+      fail "$SEC_PATH is TRACKED BY GIT — a secret-bearing file is committed"
+    else
+      pass "the derived runtime secret file is not tracked by git"
+    fi
+  fi
+
+  # Plaintext op:// value caches must not persist.
+  PLAINTEXT_CACHES=()
+  while IFS= read -r c; do [[ -f "$c" ]] && PLAINTEXT_CACHES+=("$c"); done < <(python3 -c "
+import sys; sys.path.insert(0,'$HERMES_HOME/scripts/platform')
+import lib
+for p in lib.runtime_secrets_spec()['purge']: print(p)" 2>/dev/null)
+  if ((${#PLAINTEXT_CACHES[@]})); then
+    fail "plaintext op:// value cache(s) present: ${PLAINTEXT_CACHES[*]} — run: sudo nicks-stack-secrets render"
+  else
+    pass "no plaintext op:// value cache persists provider credentials"
+  fi
+fi
+
 section "8b. Capability routing (Composio-backed Google + Notion)"
 # ==========================================================================
 # Architectural decision: this agent never uses a Hermes-native Google

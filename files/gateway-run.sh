@@ -28,6 +28,31 @@ set -a
 [ -f "$HERMES_HOME/.env" ] && . "$HERMES_HOME/.env"
 set +a
 
+# Unified runtime secrets (v1.1.8). THIS is what fixes "No Anthropic
+# credentials found": the two .env files above carry only what was written to
+# them literally, and config.yaml deliberately keeps secrets.onepassword.enabled
+# false (enabling it makes Hermes resolve all 21 op:// references at startup —
+# sequential `op read`, /dev/tty prompts, cold-start stalls). So a key living
+# ONLY in the vault never reached this process. The renderer resolves exactly
+# the secrets platform.yaml declares as runtime-required into one 0600 file and
+# we source it here, before anything else needs a credential.
+#
+# Fail-closed: on a missing REQUIRED secret the renderer removes the file rather
+# than writing a partial one, so there is nothing to source and the failure is
+# loud here instead of surfacing later as a confusing provider error.
+if [ -x /usr/local/bin/nicks-stack-secrets ]; then
+  if /usr/local/bin/nicks-stack-secrets render; then
+    set -a
+    . /root/.hermes/runtime/secrets.env
+    set +a
+  else
+    echo "[gateway] RUNTIME SECRETS UNAVAILABLE — a required credential could not" >&2
+    echo "[gateway] be resolved. The gateway is starting anyway so Telegram can" >&2
+    echo "[gateway] report the failure, but model providers will not authenticate." >&2
+    echo "[gateway] Diagnose with: sudo jack secrets status" >&2
+  fi
+fi
+
 # Composio Sessions (v1.1.0): resume the persisted session and re-fetch its MCP
 # endpoint before the gateway starts, so config.yaml's ${COMPOSIO_MCP_URL} is
 # always current. Re-minting every start is what makes URL expiry a non-issue.
@@ -37,11 +62,12 @@ set +a
 # the composio entry from config.yaml — so there is nothing stale left to
 # source and Hermes starts with no Composio server configured at all.
 #
-# mcp.env (0600) carries COMPOSIO_API_KEY as well as the URL, and is sourced
-# HERE, before the exec below. That is what makes config.yaml's
-# `x-api-key: ${COMPOSIO_API_KEY}` resolve inside the gateway process without
-# requiring Hermes-wide 1Password resolution (all 21 op:// references) to be
-# enabled just for Composio.
+# mcp.env (0600) carries the session URL and transport. As of v1.1.8 it no
+# longer carries COMPOSIO_API_KEY: that is a declared runtime secret and comes
+# from secrets.env above, so the key is stored in exactly one place. The
+# session manager still refuses to activate unless the key is actually present
+# in that rendered file, so config.yaml's `x-api-key: ${COMPOSIO_API_KEY}` can
+# never expand to an empty header.
 if [ -x /usr/local/bin/nicks-stack-composio-session ]; then
   if /usr/local/bin/nicks-stack-composio-session init; then
     set -a

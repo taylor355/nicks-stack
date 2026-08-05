@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.1.6"
+readonly SCRIPT_VERSION="1.1.8"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -964,6 +964,35 @@ elif [[ -f "$COMPOSIO_TARGET" ]]; then
   CHANGES=$((CHANGES + 1))
 else
   warn "composio session manager not found at $COMPOSIO_TARGET"
+fi
+
+# Unified runtime secrets (v1.1.8): same symlink pattern, same reason.
+SECRETS_TARGET="$HERMES_HOME/scripts/platform/secrets_runtime.py"
+if [[ -L "$PREFIX_BIN/nicks-stack-secrets" \
+      && "$(readlink -f "$PREFIX_BIN/nicks-stack-secrets")" == "$SECRETS_TARGET" ]]; then
+  skip "runtime secrets symlink already correct"
+elif [[ -f "$SECRETS_TARGET" ]]; then
+  if [[ -e "$PREFIX_BIN/nicks-stack-secrets" && ! -L "$PREFIX_BIN/nicks-stack-secrets" ]]; then
+    backup_of "$PREFIX_BIN/nicks-stack-secrets"
+    rm -f "$PREFIX_BIN/nicks-stack-secrets"
+  fi
+  ln -sf "$SECRETS_TARGET" "$PREFIX_BIN/nicks-stack-secrets"
+  ok "linked $PREFIX_BIN/nicks-stack-secrets -> $SECRETS_TARGET"
+  CHANGES=$((CHANGES + 1))
+else
+  warn "runtime secrets manager not found at $SECRETS_TARGET"
+fi
+
+# Render the runtime secrets NOW, so the composio init below (and the first
+# gateway start) have the credentials they need. Non-fatal: the renderer is
+# fail-closed and says exactly which required secret is missing.
+if [[ -x "$PREFIX_BIN/nicks-stack-secrets" ]]; then
+  if "$PREFIX_BIN/nicks-stack-secrets" render; then
+    ok "runtime secrets rendered into $HERMES_HOME/runtime/secrets.env (0600)"
+  else
+    warn "runtime secrets NOT rendered — the gateway will start without a required
+    credential. Diagnose with:  sudo jack secrets status"
+  fi
 fi
 
 # Provider doctor: same symlink pattern as the router.

@@ -163,6 +163,116 @@ def resolve_key_value(key_env: str) -> tuple[str | None, str]:
     return None, "unresolved"
 
 
+# --------------------------------------------------------------------------
+# THE canonical runtime-secret resolver  (v1.1.8)
+# --------------------------------------------------------------------------
+# Before v1.1.8 each component decided for itself what "the key is available"
+# meant: composio_session had a real resolver, the provider doctor used
+# key_presence() (which says "present" merely because an op:// reference is
+# MAPPED), verify.sh had a third opinion, and the gateway had none at all.
+# They could and did disagree.
+#
+# There is now one function. It performs a REAL resolution — env, then
+# ~/.hermes/.env, then `op read` — and returns one shape. Nothing else in the
+# platform is allowed to invent a fourth answer.
+def resolve_runtime_secret(key_env: str) -> dict:
+    """Resolve one secret for the runtime. Returns
+    {key, available, source, error, value}.
+
+    `value` is a SECRET. Only the renderer that writes the 0600 runtime env
+    may keep it; every reporting caller must drop it (runtime_secrets_report
+    does)."""
+    value, source = resolve_key_value(key_env)
+    value = (value or "").strip()
+    if value:
+        return {"key": key_env, "available": True, "source": source,
+                "error": "", "value": value}
+
+    cfg = load_yaml(CONFIG_FILE)
+    op = (cfg.get("secrets") or {}).get("onepassword") or {}
+    ref = (op.get("env") or {}).get(key_env)
+    if not ref:
+        error = (f"neither set in the environment nor in {HERMES_ENV}, and not "
+                 f"mapped in config.yaml secrets.onepassword.env")
+    elif not op_token():
+        error = (f"mapped to 1Password but no OP_SERVICE_ACCOUNT_TOKEN is "
+                 f"reachable ({OP_ENV}) — the vault cannot be read")
+    elif not have("op"):
+        error = "mapped to 1Password but the `op` CLI is not installed"
+    else:
+        field = str(ref).rsplit("/", 1)[-1]
+        error = (f"`op read` returned nothing — the field '{field}' is missing "
+                 f"from the 1Password item (PROVISIONING)")
+    return {"key": key_env, "available": False, "source": "unresolved",
+            "error": error, "value": ""}
+
+
+def runtime_secrets_spec() -> dict:
+    """platform.yaml runtime_secrets, normalised. Never raises."""
+    spec = load_yaml(PLATFORM_FILE).get("runtime_secrets")
+    spec = spec if isinstance(spec, dict) else {}
+    keys = []
+    for entry in spec.get("keys") or []:
+        if isinstance(entry, str):
+            entry = {"env": entry}
+        if not isinstance(entry, dict) or not entry.get("env"):
+            continue
+        keys.append({"env": str(entry["env"]),
+                     "required": bool(entry.get("required", False)),
+                     "consumer": str(entry.get("consumer", ""))})
+    return {
+        "dir": Path(spec.get("dir") or (HERMES_HOME / "runtime")),
+        "file": str(spec.get("file") or "secrets.env"),
+        "keys": keys,
+        "purge": [Path(p) for p in (spec.get("purge_plaintext_caches") or [])],
+    }
+
+
+def runtime_secrets_path() -> Path:
+    spec = runtime_secrets_spec()
+    return Path(spec["dir"]) / spec["file"]
+
+
+def runtime_secrets_report() -> dict:
+    """Presence-only report over every declared runtime secret.
+
+    This is what `jack secrets status`, `jack doctor` and verify.sh consume.
+    The resolved VALUES are dropped here and never leave this function."""
+    spec = runtime_secrets_spec()
+    path = Path(spec["dir"]) / spec["file"]
+    rendered = parse_env_file(path) if path.is_file() else {}
+    results, missing_required = [], []
+    for entry in spec["keys"]:
+        res = resolve_runtime_secret(entry["env"])
+        in_runtime = bool((rendered.get(entry["env"]) or "").strip())
+        results.append({
+            "key": entry["env"],
+            "required": entry["required"],
+            "consumer": entry["consumer"],
+            "available": res["available"],
+            "source": res["source"],
+            "error": res["error"],
+            "in_runtime_env": in_runtime,      # will the GATEWAY see it?
+        })
+        if entry["required"] and not res["available"]:
+            missing_required.append(entry["env"])
+    try:
+        mode = oct(path.stat().st_mode)[-3:]
+    except OSError:
+        mode = ""
+    return {
+        "path": str(path),
+        "exists": path.is_file(),
+        "mode": mode,
+        "mode_ok": mode == "600" if mode else False,
+        "keys": results,
+        "missing_required": missing_required,
+        "ok": not missing_required,
+        "gateway_ready": bool(results) and all(
+            r["in_runtime_env"] for r in results if r["required"]),
+    }
+
+
 def key_presence(key_env: str) -> dict:
     """Presence only — never the value. This is what every report uses."""
     if not key_env:

@@ -137,44 +137,20 @@ def scope_key(spec: dict | None = None) -> str:
 
 
 def resolve_credential() -> dict:
-    """THE canonical Composio credential resolution.  (v1.1.2)
+    """Composio's view of the ONE canonical resolver.  (v1.1.2, unified v1.1.8)
 
-    Session init, activation eligibility, `jack composio status` and verify.sh
-    all go through this one function, so they can no longer disagree. It is a
-    REAL resolution (env -> ~/.hermes/.env -> `op read`), never
-    presence-by-declaration: a mapped op:// reference whose vault field does
-    not exist reports unavailable, because that is the truth.
-
-    Deliberately independent of `secrets.onepassword.enabled`: that flag
-    governs whether HERMES resolves all 21 references at startup. Composio must
-    not require it — the value is fetched here and handed to the gateway
-    through the derived runtime env instead.
+    v1.1.8: this used to be a second, Composio-specific implementation of
+    "resolve a secret". It is now a thin call into lib.resolve_runtime_secret,
+    which is the single resolver the gateway, provider doctor, `jack secrets
+    status` and verify.sh all use. Composio therefore cannot disagree with the
+    rest of the platform about whether the key is available.
 
     Returns {available, source, error, value}. `value` is a secret: callers
-    that report must drop it, and status() does.
-    """
-    value, source = lib.resolve_key_value(KEY_ENV)
-    value = (value or "").strip()
-    if value:
-        return {"available": True, "source": source, "error": "", "value": value}
-
-    # Not available — say precisely why, without printing anything sensitive.
-    cfg = lib.load_yaml(lib.CONFIG_FILE)
-    op = (cfg.get("secrets") or {}).get("onepassword") or {}
-    ref = (op.get("env") or {}).get(KEY_ENV)
-    if not ref:
-        error = (f"{KEY_ENV} is neither in {lib.HERMES_ENV} nor mapped in "
-                 f"config.yaml secrets.onepassword.env")
-    elif not lib.op_token():
-        error = (f"{KEY_ENV} is mapped to 1Password but no OP_SERVICE_ACCOUNT_TOKEN "
-                 f"is reachable ({lib.OP_ENV}) — the vault cannot be read")
-    elif not lib.have("op"):
-        error = f"{KEY_ENV} is mapped to 1Password but the `op` CLI is not installed"
-    else:
-        field = ref.rsplit("/", 1)[-1]
-        error = (f"`op read` returned nothing for the mapped reference — the field "
-                 f"'{field}' is missing from the 1Password item (PROVISIONING)")
-    return {"available": False, "source": "unresolved", "error": error, "value": ""}
+    that report must drop it, and status() does."""
+    res = lib.resolve_runtime_secret(KEY_ENV)
+    return {"available": res["available"], "source": res["source"],
+            "error": (f"{KEY_ENV} {res['error']}" if res["error"] else ""),
+            "value": res["value"]}
 
 
 def sdk_site_packages() -> list[str]:
@@ -307,20 +283,28 @@ def teardown(reason: str) -> None:
 def activate(url: str, transport: str, key: str) -> bool:
     """Write the derived env and splice the config entry in. Both or neither.
 
-    v1.1.2: the env now carries COMPOSIO_API_KEY as well. config.yaml asks the
-    gateway to send `x-api-key: ${COMPOSIO_API_KEY}`, and the gateway expands
-    that from ITS OWN environment — which previously had no such variable
-    unless Hermes-wide 1Password resolution happened to be enabled. The result
-    was a valid URL with an empty header and a silent 401. Putting the resolved
-    value in this 0600 derived file, which gateway-run.sh sources before exec,
-    is what makes the header resolvable without forcing all 21 op:// references
-    to resolve at gateway startup.
+    v1.1.2 put COMPOSIO_API_KEY in this file because config.yaml asks the
+    gateway to send `x-api-key: ${COMPOSIO_API_KEY}` and the gateway expands
+    that from ITS OWN environment, which had no such variable — a valid URL
+    with an empty header and a silent 401.
 
-    Refuses to write anything at all without a non-empty key, so an empty
-    header can never be injected."""
+    v1.1.8 keeps that guarantee but stops storing the key twice: it is a
+    declared runtime secret, so secrets.env carries it and this file carries
+    only the URL and transport. The guarantee is preserved by CHECKING, not by
+    duplicating — activation refuses unless the key is genuinely present in the
+    rendered runtime env the gateway sources, so the header can still never
+    expand to nothing.
+
+    Refuses to write anything at all without a usable key."""
     if not key:
         teardown("refusing to activate without a resolved COMPOSIO_API_KEY — "
                  "an empty x-api-key header would 401 silently")
+        return False
+    runtime_secrets = lib.runtime_secrets_path()
+    if not (lib.parse_env_file(runtime_secrets).get(KEY_ENV) or "").strip():
+        teardown(f"{KEY_ENV} resolves, but is not present in {runtime_secrets} — the "
+                 f"gateway expands ${{{KEY_ENV}}} from its own environment and would "
+                 f"send an EMPTY x-api-key header. Run: sudo nicks-stack-secrets render")
         return False
     try:
         COMPOSIO_DIR.mkdir(parents=True, exist_ok=True)
@@ -333,7 +317,8 @@ def activate(url: str, transport: str, key: str) -> bool:
             "# Generated by composio_session.py — DERIVED and SECRET-BEARING.\n"
             "# Do not edit, do not commit, do not print. Mode 0600.\n"
             "# Sourced by hermes-gateway-run.sh. Regenerated on every gateway start.\n"
-            f"COMPOSIO_API_KEY={key}\n"
+            "# COMPOSIO_API_KEY is NOT here — it is a declared runtime secret and\n"
+            "# lives only in runtime/secrets.env (v1.1.8, no double storage).\n"
             f"COMPOSIO_MCP_URL={url}\n"
             f"COMPOSIO_MCP_TRANSPORT={transport}\n"
         )
@@ -597,9 +582,11 @@ def status(live: bool = True) -> dict:
     # id was filled in). init() re-creates rather than resuming when this is set.
     drift = bool(stored.get("session_id")) and stored.get("scope_key", "") != scope_key(spec)
 
-    # The gateway reads the key from the derived env, so "will the gateway
-    # have it?" is a separate, checkable fact from "can we resolve it?".
-    gateway_key_present = bool((runtime.get(KEY_ENV) or "").strip())
+    # The gateway reads the key from the unified runtime secrets file (v1.1.8 —
+    # it used to be duplicated into mcp.env), so "will the gateway have it?" is
+    # a separate, checkable fact from "can we resolve it?".
+    gateway_key_present = bool(
+        (lib.parse_env_file(lib.runtime_secrets_path()).get(KEY_ENV) or "").strip())
 
     return {
         "api_key_available": cred["available"],

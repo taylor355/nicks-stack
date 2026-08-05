@@ -5,3 +5,10 @@ __pycache__/
 # python bytecode (bootstrap excludes it, keep it out of git too)
 __pycache__/
 *.pyc
+
+# Derived, secret-bearing runtime files. These are generated on the VM under
+# /root/.hermes and must never be committed; listed here as a hard backstop in
+# case one is ever copied into a checkout.
+secrets.env
+mcp.env
+op_cache.json

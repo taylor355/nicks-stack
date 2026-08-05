@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.7 — frozen.** From here the work is agent identity and company
+**Platform v1.1.8 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,71 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.8 — one secret pipeline; the Anthropic auth fix
+
+The gateway reported:
+
+```
+Primary provider auth failed: No Anthropic credentials found.
+```
+
+while `op read` for the very same reference succeeded from a shell. Both were
+true. `gateway-run.sh` sourced only `/root/.env` and `~/.hermes/.env`, and
+`config.yaml` keeps `secrets.onepassword.enabled: false` **on purpose** —
+enabling it makes Hermes resolve all 21 `op://` references at startup, which
+means sequential `op read` calls, `/dev/tty` prompts, cold-start stalls and MCP
+timeouts. So a key that lived **only** in the vault never reached the gateway
+process at all.
+
+`COMPOSIO_API_KEY` was the one exception, because v1.1.2 gave it — and only it —
+a derived runtime env file. That is the proof: the single secret with a derived
+path worked; every secret without one failed.
+
+**The fix generalises the proven pattern rather than adding a new mechanism.**
+
+| Piece | Where |
+|---|---|
+| Declaration of what the runtime needs | `platform.yaml` → `runtime_secrets` |
+| `op://` references (unchanged, still one place) | `config.yaml` → `secrets.onepassword.env` |
+| The one resolver | `lib.resolve_runtime_secret()` |
+| The one derived file | `/root/.hermes/runtime/secrets.env`, 0600, root |
+| Who renders it | `nicks-stack-secrets render`, run by `gateway-run.sh` |
+
+Only the declared secrets are resolved — the other 16 references are still not
+touched at startup, so the stall this avoided stays avoided.
+
+```bash
+sudo jack secrets status
+```
+
+```
+Runtime secrets
+────────────────────
+  ✓ ANTHROPIC_API_KEY   resolved from 1Password
+  ✓ OPENROUTER_API_KEY  resolved from 1Password
+  ○ GEMINI_API_KEY      optional, absent
+  ✓ COMPOSIO_API_KEY    resolved from 1Password
+  ✓ TELEGRAM_BOT_TOKEN  resolved from 1Password
+
+Runtime env   ✓ /root/.hermes/runtime/secrets.env
+Mode          ✓ 600
+Gateway ready ✓ every required secret is in the runtime env
+```
+
+**Fail-closed.** A missing *required* secret removes the file rather than
+leaving a partial one, so the gateway can never source a half-populated
+environment (verified: render exits 1 and the file is gone).
+
+**No double storage.** `mcp.env` no longer carries the Composio key — it holds
+the URL and transport only. The v1.1.2 guarantee is kept by *checking* instead
+of duplicating: activation refuses unless the key is genuinely present in the
+rendered file, so `x-api-key: ${COMPOSIO_API_KEY}` still cannot expand to empty.
+
+**Plaintext caches purged.** Hermes writes resolved values to
+`cache/op_cache.json` when it does its own resolution. Every render deletes
+those (including the validation profile's copy), and `verify.sh` fails if one
+reappears.
 
 ### v1.1.7 — one unprovisioned toolkit no longer blocks the other four
 
