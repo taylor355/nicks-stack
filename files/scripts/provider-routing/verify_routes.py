@@ -26,6 +26,28 @@ except ImportError:
     sys.exit(0)
 
 
+def runtime_env_keys(path: str = "/root/.hermes/runtime/secrets.env") -> set:
+    """Names present in the rendered runtime env (v1.1.9). Presence only — no
+    value is retained. This is the plane gateway-run.sh sources, so a key here
+    IS resolvable at run time even though the 1Password map is deliberately
+    disabled. Without it every routing mode filed a standing advisory about the
+    intended configuration."""
+    keys = set()
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, _, value = line.partition("=")
+                name = name.removeprefix("export ").strip()
+                if name and value.strip():
+                    keys.add(name)
+    except OSError:
+        pass
+    return keys
+
+
 def load(path: str) -> dict:
     try:
         with open(path) as fh:
@@ -52,6 +74,7 @@ def main() -> int:
     op = (cfg.get("secrets") or {}).get("onepassword") or {}
     op_env = op.get("env") or {}
     op_on = bool(op.get("enabled"))
+    runtime_keys = runtime_env_keys()
     gateway_model = (cfg.get("model") or {}).get("default")
     gateway_provider = (cfg.get("model") or {}).get("provider")
 
@@ -101,10 +124,12 @@ def main() -> int:
                 )
 
         if key:
-            if key in op_env and op_on:
+            if key in runtime_keys:
+                print(f"PASS|{name}: {key} is in the gateway runtime env")
+            elif key in op_env and op_on:
                 print(f"PASS|{name}: {key} resolves via the 1Password map")
             elif key in op_env:
-                print(f"WARN|{name}: {key} is mapped but the 1Password map is disabled")
+                print(f"WARN|{name}: {key} is mapped but the 1Password map is disabled and it is not in the runtime env")
             else:
                 print(f"WARN|{name}: {key} is not in the 1Password map (may still be set in .env)")
 

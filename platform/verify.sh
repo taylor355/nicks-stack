@@ -386,8 +386,15 @@ PY
 
   if [[ "$OP_ENABLED" == "true" ]]; then
     pass "secrets.onepassword.enabled = true"
+  elif [[ -f "$HERMES_HOME/runtime/secrets.env" ]]; then
+    # Disabled ON PURPOSE since v1.1.8: enabling it makes Hermes resolve all 21
+    # op:// references at every start — sequential `op read`, /dev/tty prompts,
+    # cold-start stalls, MCP timeouts. The runtime secrets renderer resolves the
+    # declared subset instead, and section 8a is what proves that worked. A
+    # standing warning about the intended configuration is noise.
+    note "secrets.onepassword.enabled = false (by design) — declared secrets arrive via the runtime env; see section 8a"
   else
-    warn "secrets.onepassword.enabled = false — op:// references will not resolve (run: sudo $PREFIX_BIN/nicks-stack-op-enable)"
+    warn "secrets.onepassword.enabled = false and no runtime env is rendered — nothing will resolve op:// references (run: sudo nicks-stack-secrets render)"
   fi
 fi
 
@@ -396,11 +403,25 @@ section "5. Model credentials (presence only — no values read out)"
 # ==========================================================================
 MODEL_KEY_AVAILABLE=0
 if [[ -n "$MODEL_KEY_ENV" ]]; then
+  # The rendered runtime env FIRST (v1.1.9). This is the plane the gateway
+  # actually reads: gateway-run.sh sources this 0600 file before exec. Checking
+  # the 1Password map first and this second is how verify.sh came to report
+  #   ✗ no source for ANTHROPIC_API_KEY — the agent cannot reach its model
+  # about a gateway that was authenticating with Anthropic at that moment, and
+  # to file three advisories about a map that is disabled BY DESIGN. Section 8a
+  # already proves this file is rendered, 0600 and complete; section 5 just has
+  # to stop ignoring it.
+  if env_key_present "$HERMES_HOME/runtime/secrets.env" "$MODEL_KEY_ENV"; then
+    pass "$MODEL_KEY_ENV is in the gateway runtime env (the plane the gateway reads)"
+    MODEL_KEY_AVAILABLE=1
+  fi
   if ((OP_HAS_MODEL_KEY)) && [[ "$OP_ENABLED" == "true" ]]; then
     pass "$MODEL_KEY_ENV is mapped in the 1Password secret plane"
     MODEL_KEY_AVAILABLE=1
-  elif ((OP_HAS_MODEL_KEY)); then
-    warn "$MODEL_KEY_ENV is mapped in 1Password but the map is disabled"
+  elif ((OP_HAS_MODEL_KEY)) && ((MODEL_KEY_AVAILABLE == 0)); then
+    # Only worth saying when nothing else supplied the key. The map being
+    # disabled is the deliberate v1.1.8 posture, not a finding in itself.
+    warn "$MODEL_KEY_ENV is mapped in 1Password but the map is disabled, and it is not in the runtime env"
   fi
   if env_key_present "$HERMES_HOME/.env" "$MODEL_KEY_ENV"; then
     pass "$MODEL_KEY_ENV is present in ~/.hermes/.env"
