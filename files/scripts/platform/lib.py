@@ -281,6 +281,18 @@ def key_presence(key_env: str) -> dict:
         return {"key": key_env, "present": True, "source": "environment"}
     if len(_env_file_value(key_env)) > 1:
         return {"key": key_env, "present": True, "source": ".env"}
+    # The rendered runtime env (v1.1.9). gateway-run.sh sources this 0600 file
+    # before it execs the gateway, so a key present here genuinely IS available
+    # to the runtime — even though it is absent from .env and
+    # secrets.onepassword.enabled is deliberately false. Without this, the
+    # manifest and the bootstrap summary reported
+    #   provider anthropic unavailable (credential: 1Password map (disabled))
+    # about a provider the gateway was authenticating with. Presence only.
+    try:
+        if (parse_env_file(runtime_secrets_path()).get(key_env) or "").strip():
+            return {"key": key_env, "present": True, "source": "runtime env"}
+    except OSError:
+        pass
     cfg = load_yaml(CONFIG_FILE)
     op = (cfg.get("secrets") or {}).get("onepassword") or {}
     if key_env in (op.get("env") or {}):
