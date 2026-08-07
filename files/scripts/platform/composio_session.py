@@ -504,8 +504,17 @@ def cmd_init(args) -> int:
     # be compared and is re-minted once, on the same reasoning.
     drift = bool(stored.get("session_id")) and stored.get("scope_key", "") != want_key
     if drift:
-        before = set((stored.get("connections") or {}).items())
-        if before != set(connections.items()):
+        # Values are LISTS of account ids (v1.1.11), so compare normalised
+        # copies rather than set(dict.items()) — a list is unhashable and that
+        # raised TypeError right where the message was meant to be helpful.
+        def _norm(mapping):
+            out = {}
+            for slug, ids in (mapping or {}).items():
+                ids = ids if isinstance(ids, list) else [ids]
+                out[str(slug)] = sorted(str(i) for i in ids)
+            return out
+
+        if _norm(stored.get("connections")) != _norm(connections):
             print("composio: connected accounts changed since the stored session was "
                   "created — a session binds its connections at CREATE, so a new "
                   "session is required for them to be visible to the tools",
