@@ -35,6 +35,17 @@ description: >-
   set. Their urls, headers and ${VAR} references are untouched, so re-enabling
   is one boolean once the matching key reaches the vault. No credential is
   removed and no configuration is lost.
+  v1.1.9 also stops `jack doctor` lying about providers. gateway-run.sh sources
+  the rendered runtime env, but `jack` and route.key_available did not, so they
+  inspected a shell with no credentials and reported "provider anthropic
+  unavailable (credential: 1Password map (disabled))" about a provider the
+  running gateway was authenticating with. That is the v1.1.8 bug in another
+  place — a credential that exists but never reaches the process that needs it —
+  so both now read the same 0600 file the gateway reads (presence only,
+  read-only; rendering stays the gateway's job). Finally, the derived paths a
+  deploy creates inside the checkout (backups/, stage/, composio-venv/,
+  platform-manifest.json) are gitignored, so "deployed from a working tree with
+  uncommitted changes" now means something.
   v1.1.8 unifies the runtime secret path and fixes "Primary provider auth
   failed: No Anthropic credentials found." The gateway wrapper sourced only
   /root/.env and ~/.hermes/.env, while config.yaml keeps
@@ -183,7 +194,7 @@ versions:
   bootstrap: 1.1.9
   update: 1.1.9
   verify: 1.1.9
-  routing: 1.0.5
+  routing: 1.0.6
   doctor: 1.0.5
   manifest: 1.0.1
 

@@ -23,6 +23,41 @@ readonly PLATFORM_SCRIPTS="/root/.hermes/scripts/platform"
 readonly DOCTOR="${PLATFORM_SCRIPTS}/doctor.py"
 readonly MANIFEST="${PLATFORM_SCRIPTS}/manifest.py"
 readonly ROUTE="/usr/local/bin/nicks-stack-route"
+readonly RUNTIME_SECRETS="/root/.hermes/runtime/secrets.env"
+
+# Runtime secrets (v1.1.9). gateway-run.sh sources the rendered file before it
+# execs the gateway, so the GATEWAY sees every declared credential — but `jack`
+# did not, so `jack doctor` inspected a shell that had none and reported
+#
+#   ! provider anthropic unavailable (credential: 1Password map (disabled))
+#
+# about a provider the running gateway was authenticating with perfectly well.
+# That is the v1.1.8 bug wearing a different hat: a credential that exists but
+# never reaches the process that needs it. The report is only worth trusting if
+# it inspects the same environment the gateway runs in, so read the same file
+# the gateway reads.
+#
+# Read-only on purpose — this does NOT render. Rendering is the gateway's job
+# (and `jack secrets render`); if the file is absent, that IS the finding and
+# doctor should report the providers as unavailable, which is now true of this
+# shell too. Existing environment wins: an operator who exported a key by hand
+# to test something keeps it.
+if [[ -r "$RUNTIME_SECRETS" ]]; then
+  while IFS= read -r _line; do
+    [[ "$_line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$_line" =~ ^[[:space:]]*$ ]] && continue
+    _k="${_line%%=*}"
+    _k="${_k#export }"
+    _k="${_k//[[:space:]]/}"
+    [[ "$_k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [[ -n "${!_k:-}" ]] && continue
+    _v="${_line#*=}"
+    _v="${_v%\"}"; _v="${_v#\"}"
+    _v="${_v%\'}"; _v="${_v#\'}"
+    export "$_k=$_v"
+  done < "$RUNTIME_SECRETS"
+  unset _line _k _v
+fi
 
 usage() {
   cat <<'USAGE'

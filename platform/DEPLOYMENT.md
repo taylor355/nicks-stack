@@ -58,6 +58,27 @@ re-enabling is one boolean once the matching key reaches the Hermes vault (plus
 one `hermes mcp login <name>` for the two OAuth servers). No credential is
 removed and no configuration is lost.
 
+**`jack doctor` stopped lying about providers.** `gateway-run.sh` sources the
+rendered runtime env; `jack` and `route.key_available()` did not. So the health
+report inspected a shell with no credentials and said
+
+```
+! provider anthropic unavailable (credential: 1Password map (disabled))
+```
+
+about a provider the gateway was authenticating with at that moment. That is the
+v1.1.8 bug in a second place — a credential that exists but never reaches the
+process that needs it. Both now read the same 0600 file the gateway reads.
+Read-only and presence-only: rendering stays the gateway's job, and if the file
+is absent that IS the finding. An operator's hand-exported key still wins.
+
+**The git line means something again.** `backups/`, `stage/`, `composio-venv/`
+and `platform-manifest.json` are created inside the `/opt/nicks-stack` checkout
+by every deploy. Untracked, they made `jack doctor` report *"deployed from a
+working tree with uncommitted changes"* on a perfectly clean checkout, which
+trained the reader to ignore the one line that would have caught a real local
+edit. They are now gitignored.
+
 ### v1.1.8 — one secret pipeline; the Anthropic auth fix
 
 The gateway reported:

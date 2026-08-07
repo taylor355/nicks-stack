@@ -134,6 +134,18 @@ def key_available(key_env: str | None) -> bool:
                     return True
     except OSError:
         pass
+    # The rendered runtime env (v1.1.9). gateway-run.sh sources this 0600 file
+    # before it execs the gateway, so a key present here IS available to the
+    # gateway — even though secrets.onepassword.enabled is deliberately false
+    # and the key never appears in .env. Checking it is what stopped the router
+    # and doctor from calling Anthropic "unavailable" while the gateway was
+    # authenticating with it perfectly well. Presence only; no value is read.
+    try:
+        rendered = platform_lib.parse_env_file(platform_lib.runtime_secrets_path())
+        if (rendered.get(key_env) or "").strip():
+            return True
+    except (OSError, AttributeError):
+        pass
     # Mapped through the 1Password secret plane: hermes resolves it at start,
     # so a key absent from .env is not necessarily missing.
     return op_mapped(key_env)
