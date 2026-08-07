@@ -120,19 +120,77 @@ def partition_toolkits(resolved: list, auth_map: dict) -> tuple[list, list, dict
     return included, deferred, auth_configs
 
 
-def scope_key(spec: dict | None = None) -> str:
-    """A fingerprint of the DECLARED scope: toolkits + auth-config decisions.
+def active_connections(client, user_id: str, slugs: list[str]) -> dict:
+    """{toolkit slug: connected account id} for this user's ACTIVE connections.
+
+    WHY THIS EXISTS (v1.1.10). A tool-router session does not inherit the
+    project's connected accounts just because they share a user_id. Binding is
+    explicit: sessions.create takes `connected_accounts` (SDK signature —
+    t.Dict[str, t.Union[str, t.List[str]]], toolkit slug -> connected account
+    id). Omit it and the router answers every call with
+
+        No active connection found for toolkit(s) 'googlecalendar' in this
+        session. To fix this, call COMPOSIO_MANAGE_CONNECTIONS ...
+
+    while `client.tools.execute(..., user_id=...)` on the very same connection
+    succeeds — the contradiction that made this look like a broken OAuth. It is
+    not: the connection is fine, the session simply was not told about it.
+
+    Following the router's own advice would ALSO be wrong here. Its remedy is to
+    mint a fresh auth link and make the user re-approve — a second OAuth round
+    for a connection that is already ACTIVE, and a new connected account every
+    time the session is re-minted. Binding what exists is the correct primitive.
+
+    Resolved live rather than declared in platform.yaml on purpose: `ca_` ids
+    change whenever a toolkit is reconnected, so a hard-coded id would rot into
+    exactly this failure. Newest ACTIVE connection per toolkit wins.
+    """
+    if not slugs:
+        return {}
+    try:
+        res = client.connected_accounts.list(
+            user_ids=[user_id], toolkit_slugs=list(slugs), statuses=["ACTIVE"])
+    except Exception as exc:  # noqa: BLE001 - never fatal; see caller
+        print(f"composio: could not list connected accounts "
+              f"({lib.scrub(str(exc))[:100]}) — the session will be created "
+              f"unbound and tools will report no active connection",
+              file=sys.stderr)
+        return {}
+    found: dict[str, str] = {}
+    for item in getattr(res, "items", None) or []:
+        data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        toolkit = data.get("toolkit")
+        slug = (toolkit.get("slug") if isinstance(toolkit, dict) else toolkit) or ""
+        slug = str(slug).lower()
+        # The API returns newest first; keep the first id seen per toolkit.
+        if slug and slug not in found and data.get("id"):
+            found[slug] = str(data["id"])
+    return found
+
+
+def scope_key(spec: dict | None = None, connections: dict | None = None) -> str:
+    """A fingerprint of the DECLARED scope: toolkits + auth-config decisions,
+    plus (v1.1.10) the connected accounts the session was bound to.
 
     Stored with the session so a later platform.yaml change — e.g. filling in
     composio.auth_configs.googlecontacts once the auth config exists — forces a
     fresh session instead of silently resuming the old, narrower one. It is a
     pure local comparison, so it costs the gateway nothing at start.
+
+    Connections belong in the fingerprint because binding happens at CREATE and
+    cannot be changed on a resumed session. Connecting a new toolkit, or
+    reconnecting one so it gets a new `ca_` id, therefore has to re-mint — which
+    is precisely what makes "Taylor connects an account" take effect on the next
+    gateway start with no further action. Without it, a session created before
+    the first connection would be resumed forever and no connection would ever
+    reach the router.
     """
     spec = spec if spec is not None else _spec()
     wanted = spec.get("toolkits") or {}
     return json.dumps({
         "toolkits": {str(k): str(v) for k, v in sorted(wanted.items())},
         "auth_configs": dict(sorted(auth_config_map(spec).items())),
+        "connections": dict(sorted((connections or {}).items())),
     }, sort_keys=True)
 
 
@@ -402,7 +460,6 @@ def cmd_init(args) -> int:
     user_id = spec.get("user_id") or "taylor"
     wanted = spec.get("toolkits") or {}
     auth_map = auth_config_map(spec)
-    want_key = scope_key(spec)
     strict = not args.allow_partial          # strict is the DEFAULT now
 
     cred = resolve_credential()
@@ -420,6 +477,14 @@ def cmd_init(args) -> int:
     stored = read_session()
     session, mode = None, ""
 
+    # Which of this user's accounts are connected RIGHT NOW. platform.yaml's
+    # toolkit values are the slugs, so this needs no catalogue lookup. It goes
+    # into the scope key, so connecting (or reconnecting) an account re-mints
+    # the session on the next gateway start with nothing else to do.
+    declared_slugs = sorted({str(v).lower() for v in wanted.values() if v})
+    connections = active_connections(client, user_id, declared_slugs)
+    want_key = scope_key(spec, connections)
+
     # 1. Resume the persisted session first — this is what stops every gateway
     #    restart from minting a new session. A DECLARED-SCOPE CHANGE is the one
     #    thing that must not be resumed through: if platform.yaml now scopes a
@@ -430,8 +495,15 @@ def cmd_init(args) -> int:
     # be compared and is re-minted once, on the same reasoning.
     drift = bool(stored.get("session_id")) and stored.get("scope_key", "") != want_key
     if drift:
-        print("composio: declared toolkit scope changed since the stored session "
-              "was created — creating a new session", file=sys.stderr)
+        before = set((stored.get("connections") or {}).items())
+        if before != set(connections.items()):
+            print("composio: connected accounts changed since the stored session was "
+                  "created — a session binds its connections at CREATE, so a new "
+                  "session is required for them to be visible to the tools",
+                  file=sys.stderr)
+        else:
+            print("composio: declared toolkit scope changed since the stored session "
+                  "was created — creating a new session", file=sys.stderr)
     if stored.get("session_id") and not args.new and not drift:
         try:
             session = client.sessions.use(stored["session_id"], mcp=True)
@@ -474,10 +546,21 @@ def cmd_init(args) -> int:
                 " — no auth config id in platform.yaml composio.auth_configs; "
                 "the remaining toolkits are unaffected", file=sys.stderr)
 
+        # Bind this user's ACTIVE connections to the session. Without this the
+        # router reports "no active connection found ... in this session" for a
+        # connection that is genuinely ACTIVE — see active_connections().
+        bind = {s: connections[s] for s in slugs if s in connections}
+        unbound = [s for s in slugs if s not in connections]
+        if unbound:
+            print("composio: no ACTIVE connection yet for " + ", ".join(unbound) +
+                  " — those tools will report no connection until the account is "
+                  "connected (the session re-mints itself once one appears)",
+                  file=sys.stderr)
         try:
             session = client.sessions.create(
                 user_id=user_id, toolkits=slugs, mcp=True,
-                **({"auth_configs": auth_configs} if auth_configs else {}))
+                **({"auth_configs": auth_configs} if auth_configs else {}),
+                **({"connected_accounts": bind} if bind else {}))
         except Exception as exc:  # noqa: BLE001
             teardown(f"session create failed: {lib.scrub(str(exc))[:160]}")
             return 1
@@ -510,13 +593,17 @@ def cmd_init(args) -> int:
         "toolkits": toolkits,
         "deferred": deferred,
         "scope_key": want_key,
+        "connections": (connections if mode == "created"
+                        else (stored.get("connections") or {})),
         "header_type": "x-api-key",
         "transport": transport,
     })
 
+    bound = connections if mode == "created" else (stored.get("connections") or {})
     print(f"composio: session {mode} (id persisted), MCP endpoint obtained "
           f"[url {len(url)} chars, {len(headers)} header(s)], "
-          f"{len(toolkits)} toolkit(s) scoped"
+          f"{len(toolkits)} toolkit(s) scoped, "
+          f"{len(bound)} connected account(s) bound"
           + (f", {len(deferred)} deferred (pending auth config)" if deferred else ""))
     return 0
 
@@ -579,8 +666,13 @@ def status(live: bool = True) -> dict:
     missing = sorted(set(declared) - resolved_caps - deferred_caps) if declared else []
 
     # Declared scope changed since the session was minted (e.g. an auth config
-    # id was filled in). init() re-creates rather than resuming when this is set.
-    drift = bool(stored.get("session_id")) and stored.get("scope_key", "") != scope_key(spec)
+    # id was filled in, or an account was connected). init() re-creates rather
+    # than resuming when this is set. Compare against the connections the stored
+    # session was BOUND to; a live re-list here would make `status` depend on a
+    # network call it does not otherwise need.
+    bound = stored.get("connections") or {}
+    drift = (bool(stored.get("session_id"))
+             and stored.get("scope_key", "") != scope_key(spec, bound))
 
     # The gateway reads the key from the unified runtime secrets file (v1.1.8 —
     # it used to be duplicated into mcp.env), so "will the gateway have it?" is
@@ -610,6 +702,15 @@ def status(live: bool = True) -> dict:
         "toolkits_missing": missing,
         "toolkits_deferred": [d["capability"] for d in deferred],
         "deferred_detail": deferred,
+        # Which toolkits this session is actually BOUND to (v1.1.10). A scoped
+        # toolkit with no bound connection answers every tool call with "no
+        # active connection found ... in this session", so the two facts have to
+        # be reported separately — conflating them is what let a green
+        # `jack composio status` sit next to a Calendar that could not be read.
+        "connections_bound": dict(sorted(bound.items())),
+        "toolkits_unbound": sorted(
+            {t["slug"] for t in (stored.get("toolkits") or [])
+             if isinstance(t, dict) and t.get("slug")} - set(bound)),
         "scope_ok": not missing,
         "scope_drift": drift,
         # Stale = a runtime endpoint exists that the live check says is dead,
@@ -656,9 +757,17 @@ def cmd_status(args) -> int:
     print(f"Runtime config       {tick(data['config_entry_active'])} "
           f"{'active in config.yaml' if data['config_entry_active'] else 'absent (no Composio tools)'}")
     print("Toolkits")
+    bound_map = data.get("connections_bound") or {}
     if data["toolkits_resolved"]:
         for slug in data["toolkits_resolved"]:
-            print(f"  {tick(True)} {slug}")
+            # Scoped and bound are different facts. A scoped toolkit with no
+            # bound connection answers every call with "no active connection
+            # found ... in this session", so it must not read as a plain ✓.
+            if slug in bound_map:
+                print(f"  {tick(True)} {slug}  (connected: {bound_map[slug]})")
+            else:
+                print(f"  ! {slug}  (scoped, NO connected account bound — "
+                      f"tools will report no connection)")
     else:
         print("  (none scoped)")
     for cap in data["toolkits_missing"]:
@@ -674,6 +783,12 @@ def cmd_status(args) -> int:
     print(_ts(data["last_verified"]))
     if data["stale_runtime"]:
         print("\nWARNING: stale runtime detected — run: sudo nicks-stack-composio-session init")
+    if data.get("toolkits_unbound"):
+        print("\nNOTE: " + ", ".join(data["toolkits_unbound"]) + " is scoped but has no"
+              "\n      connected account bound. Connect the account, then restart the"
+              "\n      gateway (or run: sudo nicks-stack-composio-session init --new) —"
+              "\n      a session binds its connections at CREATE and cannot pick up a"
+              "\n      new one by resuming.")
     if data["scope_drift"]:
         print("\nNOTE: platform.yaml declares a different toolkit scope than this session"
               "\n      carries — the next init will mint a new session automatically.")

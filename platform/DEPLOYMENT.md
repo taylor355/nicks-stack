@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.9 — frozen.** From here the work is agent identity and company
+**Platform v1.1.10 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,65 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.10 — a tool-router session must be TOLD which account to use
+
+Google Calendar was connected, ACTIVE, and owned by `user_id: taylor`. Jack still
+answered:
+
+```
+No active connection found for toolkit(s) 'googlecalendar' in this session.
+```
+
+while, against that same connection at the same moment:
+
+```python
+client.tools.execute("GOOGLECALENDAR_EVENTS_LIST", {...}, user_id="taylor")
+# -> successful: True, real events
+```
+
+Both were true, and the contradiction is the whole diagnosis. **A tool-router
+session does not inherit the project's connected accounts just because they
+share a `user_id`.** Binding is explicit, and the SDK says so:
+
+```python
+sessions.create(..., connected_accounts={"googlecalendar": "ca_..."})
+#                    t.Dict[str, t.Union[str, t.List[str]]]
+```
+
+We were never passing it. So the OAuth was never broken — the session simply had
+no account attached, and every Calendar call fell through to the router's
+generic "not connected" branch. Re-minting the session did not help, because a
+session with nothing to bind binds nothing.
+
+Following the router's own suggested fix would have been wrong here. It tells
+the agent to call `COMPOSIO_MANAGE_CONNECTIONS`, which mints a fresh auth link
+and asks the user to approve *again* — a second OAuth round for an account that
+is already ACTIVE, and a brand-new connected account every time the session is
+re-minted. Binding what already exists is the correct primitive.
+
+**Connections are resolved live, never declared.** `ca_` ids change whenever a
+toolkit is reconnected, so a hard-coded id in platform.yaml would rot into
+exactly this failure. `composio_session init` lists this user's ACTIVE
+connections and binds the newest per toolkit.
+
+**Connecting an account now takes effect by itself.** The bound set is folded
+into `scope_key`, so a new or reconnected account is scope drift and the next
+gateway start mints a session that includes it. That is required, not cosmetic:
+binding happens at CREATE, so a resumed session can never pick up a connection
+that appeared after it.
+
+`jack composio status` now separates *scoped* from *bound*:
+
+```
+Toolkits
+  ✓ googlecalendar  (connected: ca_9POl5EyLozUP)
+  ! gmail           (scoped, NO connected account bound — tools will report no connection)
+```
+
+A scoped-but-unbound toolkit answers every call with "no active connection", so
+it must not read as a plain ✓. That conflation is what let a green
+`jack composio status` sit directly next to a Calendar Jack could not read.
 
 ### v1.1.9 — v1.1.8 verified against the real vault; six dead MCP servers quieted
 

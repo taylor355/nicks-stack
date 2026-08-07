@@ -16,10 +16,26 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.9
+version: 1.1.10
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.10 makes Jack's Composio tools actually reach a connected account. A
+  tool-router session does NOT inherit the project's connected accounts from a
+  shared user_id — binding is explicit, via sessions.create(connected_accounts=
+  {slug: ca_id}). Without it the router answered every call with "No active
+  connection found for toolkit(s) 'googlecalendar' in this session" while
+  client.tools.execute(user_id='taylor') on that same ACTIVE connection
+  succeeded. That contradiction read like a broken OAuth; the OAuth was fine,
+  the session was simply never told which account to use. composio_session now
+  resolves this user's ACTIVE connections at init and binds them, and folds them
+  into scope_key so connecting or reconnecting an account re-mints the session
+  on the next gateway start — binding happens at CREATE and a resumed session
+  can never pick up a new connection. Ids are resolved live, never declared,
+  because ca_ ids change on every reconnect. `jack composio status` now
+  distinguishes scoped from bound: a scoped toolkit with no bound account is a
+  warning, not a tick, which is what let a green status sit next to a Calendar
+  that could not be read.
   v1.1.9 verifies v1.1.8 against the real vault and quiets six MCP servers that
   had no usable credential. `jack secrets status` now resolves all five declared
   runtime secrets live (four from 1Password, TELEGRAM_BOT_TOKEN from .env), the
@@ -190,10 +206,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.9
-  bootstrap: 1.1.9
-  update: 1.1.9
-  verify: 1.1.9
+  platform: 1.1.10
+  bootstrap: 1.1.10
+  update: 1.1.10
+  verify: 1.1.10
   routing: 1.0.6
   doctor: 1.0.6
   manifest: 1.0.2
