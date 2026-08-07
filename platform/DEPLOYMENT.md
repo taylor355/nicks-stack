@@ -1,6 +1,6 @@
 # Taylor AI Platform — Deployment Guide
 
-**Platform v1.1.8 — frozen.** From here the work is agent identity and company
+**Platform v1.1.9 — frozen.** From here the work is agent identity and company
 builds; infrastructure changes should be bug fixes only.
 
 Portable deployment onto an **existing** Ubuntu machine — an Orgo Hermes
@@ -17,6 +17,46 @@ golden image.
 | **Secret plane** | 1Password service account resolves every key at agent start. No secret is ever baked into the repo |
 | **Integrations** | Telegram, Composio, AgentMail, AgentPhone, Latitude, Orgo, Obsidian, Claude Code, Codex |
 | **Source of truth** | `platform.yaml` (declared: version, services, identity, companies) + `platform-manifest.json` (detected: what this machine actually has) |
+
+### v1.1.9 — v1.1.8 verified against the real vault; six dead MCP servers quieted
+
+v1.1.8 shipped tested only against a stubbed `op`. It has now been deployed and
+re-tested against the live 1Password service account, and the fix holds:
+
+```
+Runtime secrets
+  ✓ ANTHROPIC_API_KEY   resolved from 1Password
+  ✓ OPENROUTER_API_KEY  resolved from 1Password
+  ✓ GEMINI_API_KEY      resolved from 1Password
+  ✓ COMPOSIO_API_KEY    resolved from 1Password
+  ✓ TELEGRAM_BOT_TOKEN  resolved from .env
+Gateway ready ✓ every required secret is in the runtime env
+```
+
+The proof that matters is not the status command but the **running process**.
+Before the restart, `/proc/<gateway pid>/environ` carried `COMPOSIO_API_KEY`
+(the one secret v1.1.2 had given a derived file) and no `ANTHROPIC_API_KEY` —
+exactly the asymmetry v1.1.8 was written to remove. After the restart both the
+`flock` wrapper and the Python gateway it execs carry all five. `jack doctor
+--providers` then reports live Anthropic, OpenRouter and Gemini inference, and a
+real agent turn ran on `provider=anthropic model=claude-sonnet-5` and was
+delivered to Telegram. The `Primary provider auth failed` line is gone.
+
+**Six MCP servers now ship disabled.** They were connecting on every single turn
+and failing, which cost handshake latency at the front of each turn and buried
+genuine errors under repeated WARN lines in `agent.log` and `errors.log`:
+
+| server | why it could never work here |
+|---|---|
+| `agent-cards`, `linear` | `auth: oauth` with no cached tokens; minting them needs an interactive `hermes mcp login`, which a headless gateway cannot run |
+| `xapi-app-only`, `vidiq`, `latitude` | 401 — `X_APP_ONLY_BEARER_TOKEN` / `VIDIQ_MCP_API_KEY` / `LATITUDE_API_KEY` are not in the vault |
+| `ideabrowser` | its url interpolates `${IDEABROWSER_KEY}`, which is unset, so it is contacted with an empty key |
+
+This follows the precedent `xapi` already set in config.yaml. **Disabled, not
+deleted**: every url, header and `${VAR}` reference is still there, so
+re-enabling is one boolean once the matching key reaches the Hermes vault (plus
+one `hermes mcp login <name>` for the two OAuth servers). No credential is
+removed and no configuration is lost.
 
 ### v1.1.8 — one secret pipeline; the Anthropic auth fix
 

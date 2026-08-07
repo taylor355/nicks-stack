@@ -16,10 +16,25 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.8
-released: 2026-08-05
+version: 1.1.9
+released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.9 verifies v1.1.8 against the real vault and quiets six MCP servers that
+  had no usable credential. `jack secrets status` now resolves all five declared
+  runtime secrets live (four from 1Password, TELEGRAM_BOT_TOKEN from .env), the
+  restarted gateway process genuinely carries ANTHROPIC_API_KEY in its own
+  environment, and `jack doctor --providers` reports live Anthropic, OpenRouter
+  and Gemini inference — the "No Anthropic credentials found" failure is gone,
+  confirmed by a real agent turn on provider=anthropic delivered to Telegram.
+  Separately, agent-cards, linear, xapi-app-only, vidiq, ideabrowser and
+  latitude were connecting on EVERY turn and failing (two on non-interactive
+  OAuth, three on 401, one on an unset key interpolated into its url), adding
+  handshake latency to the front of each turn and burying real errors under WARN
+  noise. All six now ship `enabled: false`, following the precedent xapi already
+  set. Their urls, headers and ${VAR} references are untouched, so re-enabling
+  is one boolean once the matching key reaches the vault. No credential is
+  removed and no configuration is lost.
   v1.1.8 unifies the runtime secret path and fixes "Primary provider auth
   failed: No Anthropic credentials found." The gateway wrapper sourced only
   /root/.env and ~/.hermes/.env, while config.yaml keeps
@@ -164,10 +179,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.8
-  bootstrap: 1.1.8
-  update: 1.1.8
-  verify: 1.1.8
+  platform: 1.1.9
+  bootstrap: 1.1.9
+  update: 1.1.9
+  verify: 1.1.9
   routing: 1.0.5
   doctor: 1.0.5
   manifest: 1.0.1

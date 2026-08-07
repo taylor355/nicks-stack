@@ -384,16 +384,42 @@ plugins:
   entries:
     orgo-desktop-local:
       allow_tool_override: false
+# ---------------------------------------------------------------------------
+# UNCONFIGURED MCP SERVERS SHIP DISABLED  (v1.1.9)
+# ---------------------------------------------------------------------------
+# Six servers below carry `enabled: false` for the same reason `xapi` already
+# did: they have no usable credential on this platform, so every agent turn
+# paid for them and got nothing back. Measured on a live cron turn:
+#
+#   agent-cards    OAuthNonInteractiveError — no cached tokens, and the gateway
+#   linear         is headless, so the interactive `hermes mcp login` flow that
+#                  would mint them can never run from here
+#   xapi-app-only  401 Unauthorized — X_APP_ONLY_BEARER_TOKEN not in the vault
+#   vidiq          401 Unauthorized — VIDIQ_MCP_API_KEY not in the vault
+#   latitude       401 Unauthorized — LATITUDE_API_KEY not in the vault
+#   ideabrowser    url interpolates ${IDEABROWSER_KEY}, which is unset, so the
+#                  server is only ever contacted with an empty key
+#
+# Those six added ~2s of connect/handshake latency to the FRONT of every turn
+# and a wall of WARN lines to agent.log and errors.log, which buried real
+# failures. Disabling is the right lever rather than deleting: the url, the
+# headers and the ${VAR} references are all still here, so the entire re-enable
+# procedure is `enabled: true` once the matching key lands in the Hermes vault
+# (plus `hermes mcp login <name>` for the two OAuth ones). No credential is
+# removed and no configuration is lost.
+# ---------------------------------------------------------------------------
 mcp_servers:
   vidiq:
     url: https://mcp.vidiq.com/mcp
     headers:
       Authorization: Bearer ${VIDIQ_MCP_API_KEY}
-    enabled: true
+    # disabled v1.1.9 — 401; set true when VIDIQ_MCP_API_KEY is in the vault
+    enabled: false
     connect_timeout: 60.0
   latitude:
     url: https://api.latitude.so/v1/mcp
-    enabled: true
+    # disabled v1.1.9 — 401; set true when LATITUDE_API_KEY is in the vault
+    enabled: false
     headers:
       Authorization: Bearer ${LATITUDE_API_KEY}
   orgo:
@@ -436,7 +462,9 @@ mcp_servers:
   agent-cards:
     url: https://mcp.agentcard.sh/mcp
     auth: oauth
-    enabled: true
+    # disabled v1.1.9 — OAuth needs an interactive `hermes mcp login agent-cards`
+    # that a headless gateway cannot run. Set true after logging in once.
+    enabled: false
   x-docs:
     url: https://docs.x.com/mcp
     connect_timeout: 60.0
@@ -459,16 +487,21 @@ mcp_servers:
     url: https://api.x.com/mcp
     headers:
       Authorization: Bearer ${X_APP_ONLY_BEARER_TOKEN}
-    enabled: true
+    # disabled v1.1.9 — 401; set true when X_APP_ONLY_BEARER_TOKEN is in the vault
+    enabled: false
     connect_timeout: 120
   linear:
     url: https://mcp.linear.app/mcp
     auth: oauth
-    enabled: true
+    # disabled v1.1.9 — OAuth needs an interactive `hermes mcp login linear`
+    # that a headless gateway cannot run. Set true after logging in once.
+    enabled: false
   ideabrowser:
     url: https://www.ideabrowser.com/api/mcp/mcp?key=${IDEABROWSER_KEY}
     connect_timeout: 60.0
-    enabled: true
+    # disabled v1.1.9 — ${IDEABROWSER_KEY} is unset, so the url carries an empty
+    # key; set true when IDEABROWSER_KEY is in the vault
+    enabled: false
   obsidian-vault:
     command: npx
     args:
