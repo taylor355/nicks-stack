@@ -16,10 +16,27 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.10
+version: 1.1.11
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.11 is the cost-and-capacity pass, driven by measurement rather than
+  guesswork. Jack's cached prefix is ~33,555 tokens, and agent.log showed every
+  turn's FIRST call arriving with no cache hit while calls 2..N inside the same
+  turn hit 82-100% — a 5-minute cache TTL expiring between messages. cache_ttl
+  is now 1h, the other tier Anthropic offers. `hermes prompt-size` then showed
+  tool schemas (62.3 KB / 36 tools) dwarfing the system prompt (22.7 KB), so the
+  telegram toolset list drops nine toolsets that were ALREADY failing their own
+  runtime checks every turn — browser, computer_use, image_gen (bfl, the single
+  largest at 10.2 KB), kanban, web, tts, spotify, x_search, orgo_desktop. Their
+  schemas were billed on every call to every model and were never callable. cli
+  keeps the full set: this narrows the phone, not the machine. An empty fallback
+  chain meant an Anthropic 529 simply failed at Taylor; OpenRouter now backs the
+  primary (Sonnet, then Gemini as an independent path). Composio now binds EVERY
+  active account per toolkit rather than only the newest, so several Google
+  identities work at once. And local inference is diagnosed honestly: it fails
+  here because of 92% CPU steal, not because Ollama is broken, so the doctor
+  measures steal on any local failure and names the host instead of the daemon.
   v1.1.10 makes Jack's Composio tools actually reach a connected account. A
   tool-router session does NOT inherit the project's connected accounts from a
   shared user_id — binding is explicit, via sessions.create(connected_accounts=
@@ -206,12 +223,12 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.10
-  bootstrap: 1.1.10
-  update: 1.1.10
-  verify: 1.1.10
-  routing: 1.0.6
-  doctor: 1.0.6
+  platform: 1.1.11
+  bootstrap: 1.1.11
+  update: 1.1.11
+  verify: 1.1.11
+  routing: 1.0.7
+  doctor: 1.0.7
   manifest: 1.0.2
 
 # Services this platform supervises. Supervisor is the init for services on

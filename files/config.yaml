@@ -126,8 +126,46 @@ compression:
   target_ratio: 0.2
   protect_last_n: 20
   protect_first_n: 3
+# Prompt caching (v1.1.11). MEASURED, not guessed: Jack's cached prefix is
+# ~33,555 tokens (system prompt + tool schemas), and agent.log showed every
+# turn's FIRST API call arriving with no cache= line — a full-price 33.5k
+# prefix — while calls 2..N within the same turn hit 82-100%. That is a 5-minute
+# TTL expiring between messages: Taylor writes to Jack minutes-to-hours apart,
+# so the cache was warm only *inside* a turn and cold at the start of every one.
+#
+# "1h" is the other tier Anthropic offers (hermes_cli/config_defaults.py:715 —
+# only "5m" and "1h" are supported). The trade is the write multiplier: a 1h
+# cache write costs 2x base vs 1.25x for 5m, while a read is 0.1x either way.
+# So 1h loses only when consecutive messages are more than an hour apart, and
+# wins whenever two land inside the same hour — which is what a working day with
+# an assistant looks like.
 prompt_caching:
-  cache_ttl: 5m
+  cache_ttl: 1h
+
+# Fallback chain (v1.1.11). Tried in order when the PRIMARY model fails with a
+# rate-limit, overload or connection error — not for cost routing, which is what
+# routing.yaml modes are for. Until now this was empty, so an Anthropic 529
+# (their overload response, which does happen) ended the turn and Jack simply
+# failed at Taylor.
+#
+# OpenRouter is the right shape for this slot: it is already a configured
+# provider with a live key, it fronts the same Anthropic models, and it is a
+# different vendor path — so an Anthropic-side incident does not take both out.
+# Sonnet first (same tier as the primary, so quality is unchanged), then Gemini
+# via OpenRouter as a genuinely independent backstop if Anthropic capacity is
+# broadly unavailable.
+#
+# NOTE ON COST: this is deliberately NOT a cheaper-model chain. OpenRouter adds
+# a margin over Anthropic direct and does not reproduce Anthropic's prompt
+# caching, so a fallback turn costs more than a primary turn. That is the
+# correct trade for an availability backstop that fires rarely.
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-5
+    key_env: OPENROUTER_API_KEY
+  - provider: openrouter
+    model: google/gemini-3.6-flash
+    key_env: OPENROUTER_API_KEY
 display:
   compact: false
   busy_input_mode: interrupt
@@ -238,27 +276,49 @@ platform_toolsets:
     - web
     - x_search
     - spotify
+  # TELEGRAM IS TRIMMED ON PURPOSE (v1.1.11).
+  #
+  # Tool schemas are the largest single item in Jack's cached prefix — 62.3 KB
+  # across 36 built-in tools, measured with `hermes prompt-size --platform
+  # telegram`, against a 22.7 KB system prompt. Every toolset listed here is
+  # billed on EVERY call to EVERY model, whether or not the tool is reachable.
+  #
+  # Nine toolsets were removed from telegram. The test was not "does Jack need
+  # this?" but "does this already fail its own runtime check?" — every entry
+  # below was logged as unavailable on each turn in agent.log:
+  #
+  #   browser       _browser_cdp_check / _browser_dialog_check   -> False
+  #   computer_use  check_computer_use_requirements              -> False
+  #   image_gen     check_image_generation_requirements          -> False  (bfl,
+  #                 6 tools, 10.2 KB — the single largest toolset)
+  #   kanban        _check_kanban_mode                           -> False
+  #   web           check_web_api_key                            -> False  (no
+  #                 EXA / Firecrawl key in the vault)
+  #   tts, spotify, x_search, orgo_desktop   no credential or no device here
+  #
+  # So their schemas were pure cost: paid for on every message, never callable.
+  # Removing them costs no capability that existed. `cli` below keeps the full
+  # set, so nothing is lost when Taylor works at the console — this narrows the
+  # phone, not the machine.
+  #
+  # code_execution, terminal and file are KEPT. They do work, and skills use
+  # them. Dropping terminal would also be a defensible security call for a chat
+  # surface, but it is a real capability change rather than removing waste, so
+  # it stays a decision for Taylor rather than something done quietly here.
+  #
+  # Re-adding any line restores it on the next gateway restart.
   telegram:
-    - browser
     - clarify
     - code_execution
-    - computer_use
     - cronjob
     - delegation
     - file
-    - image_gen
-    - kanban
     - memory
-    - orgo_desktop
     - session_search
     - skills
     - terminal
     - todo
-    - tts
     - vision
-    - web
-    - x_search
-    - spotify
   discord:
     - browser
     - clarify

@@ -530,6 +530,19 @@ def check_ollama(spec: dict, args) -> Result:
         ok, detail, _ = platform_lib.api_probe(
             "ollama", model=chosen, base_url=host,
             max_tokens=probe_budget(args), timeout=args.timeout)
+        if not ok:
+            # A local timeout is almost never Ollama's fault. On this platform
+            # it was 92% CPU steal: the model was resident and llama.cpp was
+            # mid-warmup, it just never got scheduled. Reporting "HTTP 0 timed
+            # out" sent the reader after a daemon that was working fine, so name
+            # the host's capacity when that is what it is. (v1.1.11)
+            steal = platform_lib.cpu_steal_percent()
+            if steal >= platform_lib.CPU_STEAL_CRITICAL:
+                detail = (f"{detail} — CPU steal is {steal}%: the hypervisor is "
+                          f"giving this VM a fraction of a core, so local "
+                          f"inference cannot complete. Not an Ollama fault and "
+                          f"not fixable from inside the VM; this needs more CPU "
+                          f"on the host")
         return ok, detail
 
     return run_inference(res, args, provider=provider, model=chosen,

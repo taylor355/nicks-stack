@@ -121,7 +121,11 @@ def partition_toolkits(resolved: list, auth_map: dict) -> tuple[list, list, dict
 
 
 def active_connections(client, user_id: str, slugs: list[str]) -> dict:
-    """{toolkit slug: connected account id} for this user's ACTIVE connections.
+    """{toolkit slug: [connected account ids]} for this user's ACTIVE connections.
+
+    ALL of them, newest first — a toolkit may legitimately have several (three
+    Google identities on gmail and googlecalendar, say). sessions.create takes
+    t.Union[str, t.List[str]] per slug, so the list is passed through as-is.
 
     WHY THIS EXISTS (v1.1.10). A tool-router session does not inherit the
     project's connected accounts just because they share a user_id. Binding is
@@ -156,15 +160,20 @@ def active_connections(client, user_id: str, slugs: list[str]) -> dict:
               f"unbound and tools will report no active connection",
               file=sys.stderr)
         return {}
-    found: dict[str, str] = {}
+    found: dict[str, list[str]] = {}
     for item in getattr(res, "items", None) or []:
         data = item.model_dump() if hasattr(item, "model_dump") else dict(item)
         toolkit = data.get("toolkit")
         slug = (toolkit.get("slug") if isinstance(toolkit, dict) else toolkit) or ""
         slug = str(slug).lower()
-        # The API returns newest first; keep the first id seen per toolkit.
-        if slug and slug not in found and data.get("id"):
-            found[slug] = str(data["id"])
+        if not slug or not data.get("id"):
+            continue
+        # EVERY active account, not just the newest (v1.1.11). Taylor runs three
+        # Google identities — tk-holdings, Outlaw Industrial and personal — and
+        # keeping only the first would have silently answered "you have no mail"
+        # for two of them. The API returns newest first, so the head of each list
+        # stays the most recent, which is what a single-account toolkit gets.
+        found.setdefault(slug, []).append(str(data["id"]))
     return found
 
 
@@ -549,13 +558,19 @@ def cmd_init(args) -> int:
         # Bind this user's ACTIVE connections to the session. Without this the
         # router reports "no active connection found ... in this session" for a
         # connection that is genuinely ACTIVE — see active_connections().
-        bind = {s: connections[s] for s in slugs if s in connections}
-        unbound = [s for s in slugs if s not in connections]
+        bind = {s: connections[s] for s in slugs if connections.get(s)}
+        unbound = [s for s in slugs if not connections.get(s)]
         if unbound:
             print("composio: no ACTIVE connection yet for " + ", ".join(unbound) +
                   " — those tools will report no connection until the account is "
                   "connected (the session re-mints itself once one appears)",
                   file=sys.stderr)
+        multi = {s: len(v) for s, v in bind.items() if len(v) > 1}
+        if multi:
+            print("composio: multiple accounts bound — " + ", ".join(
+                f"{s} x{n}" for s, n in sorted(multi.items())) +
+                "; tools receive every one and the agent picks per call",
+                file=sys.stderr)
         try:
             session = client.sessions.create(
                 user_id=user_id, toolkits=slugs, mcp=True,
@@ -600,10 +615,11 @@ def cmd_init(args) -> int:
     })
 
     bound = connections if mode == "created" else (stored.get("connections") or {})
+    n_accounts = sum(len(v) if isinstance(v, list) else 1 for v in bound.values())
     print(f"composio: session {mode} (id persisted), MCP endpoint obtained "
           f"[url {len(url)} chars, {len(headers)} header(s)], "
           f"{len(toolkits)} toolkit(s) scoped, "
-          f"{len(bound)} connected account(s) bound"
+          f"{n_accounts} connected account(s) bound across {len(bound)} toolkit(s)"
           + (f", {len(deferred)} deferred (pending auth config)" if deferred else ""))
     return 0
 
@@ -764,7 +780,13 @@ def cmd_status(args) -> int:
             # bound connection answers every call with "no active connection
             # found ... in this session", so it must not read as a plain ✓.
             if slug in bound_map:
-                print(f"  {tick(True)} {slug}  (connected: {bound_map[slug]})")
+                ids = bound_map[slug]
+                ids = ids if isinstance(ids, list) else [ids]
+                if len(ids) == 1:
+                    print(f"  {tick(True)} {slug}  (connected: {ids[0]})")
+                else:
+                    print(f"  {tick(True)} {slug}  ({len(ids)} accounts: "
+                          f"{', '.join(ids)})")
             else:
                 print(f"  ! {slug}  (scoped, NO connected account bound — "
                       f"tools will report no connection)")

@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import sys
 import urllib.error
 import urllib.request
@@ -1229,6 +1230,57 @@ def ollama_host(spec: dict | None = None) -> str:
     if not host.startswith("http"):
         host = f"http://{host}"
     return host.rstrip("/")
+
+
+def cpu_steal_percent(sample_seconds: float = 3.0) -> float:
+    """Percentage of this VM's CPU time taken by the hypervisor, or -1.0.
+
+    WHY A PLATFORM CARES (v1.1.11). Local inference on this box failed as
+    "Ollama inference: HTTP 0 timed out", which reads like a broken daemon. It
+    was not: `ollama ps` showed the model resident, llama.cpp had allocated its
+    KV cache and was mid-warmup, and it simply never got scheduled. /proc/stat
+    told the real story — 92% steal, 0.3% idle. The VM wants CPU essentially all
+    the time and receives about 7% of one core.
+
+    No amount of configuration fixes that, so the platform should name it
+    instead of blaming Ollama. A timeout with high steal is a capacity fact
+    about the host; a timeout with low steal is a real local fault.
+
+    Returns -1.0 where /proc/stat is unavailable or unparseable (non-Linux, or a
+    kernel without the steal column) so callers can skip the check rather than
+    report a misleading 0.
+    """
+    def _snapshot() -> list[int] | None:
+        try:
+            with open("/proc/stat") as fh:
+                fields = fh.readline().split()
+        except OSError:
+            return None
+        if len(fields) < 9 or fields[0] != "cpu":
+            return None
+        try:
+            return [int(v) for v in fields[1:9]]
+        except ValueError:
+            return None
+
+    first = _snapshot()
+    if first is None:
+        return -1.0
+    time.sleep(max(0.2, sample_seconds))
+    second = _snapshot()
+    if second is None:
+        return -1.0
+    delta = [b - a for a, b in zip(first, second)]
+    total = sum(delta)
+    if total <= 0:
+        return -1.0
+    return round(100.0 * delta[7] / total, 1)
+
+
+# Above this, the host is not giving this VM enough CPU to run a local model.
+# Chosen from the measured failure: 92% steal could not complete a 1.7B warmup
+# in 20 minutes, while normal shared hosting sits in the low single digits.
+CPU_STEAL_CRITICAL = 40.0
 
 
 def ollama_detect(spec: dict | None = None, timeout: int = 8) -> dict:

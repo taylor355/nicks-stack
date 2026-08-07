@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.10"
+readonly SCRIPT_VERSION="1.1.11"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"

@@ -122,6 +122,29 @@ modes:
       is pulled locally (discovered from /api/tags), so nothing is assumed. If
       the daemon is down or no model is pulled, this mode fails cleanly with
       "not installed/configured" and never falls back to a paid route.
+    # BLOCKED ON HOST CPU, NOT ON CONFIGURATION (v1.1.11).
+    #
+    # This mode does not work on the current VM, and no setting here will fix
+    # it. Measured from /proc/stat: 92% steal, 0.3% idle — the VM asks for CPU
+    # essentially all the time and receives roughly 7% of one core. A trivial
+    # Python loop that costs ~1s of CPU took 18.8s of wall clock.
+    #
+    # What that looked like before it was understood: `ollama ps` showed the
+    # model RESIDENT, llama.cpp had allocated its KV cache and printed
+    # "warming up the model with an empty run", and then the client timed out
+    # and Ollama logged "client connection closed before llama-server finished
+    # loading, aborting load" — so the load was abandoned and the next probe
+    # started from cold again. Both a 4B and a 1.7B model failed identically;
+    # the 1.7B did not finish a warmup in 20 minutes. Ollama is healthy, the
+    # daemon answers, the models are pulled. There is simply no CPU.
+    #
+    # `nicks-stack-provider-doctor` now measures steal on any local inference
+    # failure and says so, instead of reporting a bare "HTTP 0 timed out".
+    #
+    # To actually enable local: move to a VM with dedicated CPU, then
+    #   ollama pull qwen3:1.7b   (already pulled here)
+    #   jack doctor --providers  (must show Ollama inference ok)
+    # Nothing in this file needs to change.
 
 # --------------------------------------------------------------------------
 # Providers — what `nicks-stack-provider-doctor` validates end to end.
