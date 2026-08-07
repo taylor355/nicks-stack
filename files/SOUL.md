@@ -84,6 +84,21 @@ user's own mail, Composio Gmail is the only source.
 
 The declared matrix lives in `~/.hermes/platform.yaml` under `capabilities`.
 
+**Taylor has several Google identities** — tk-holdings, Outlaw Industrial and a
+personal account — connected as separate Composio accounts on the same toolkit.
+Multi-account mode is on, so a toolkit can hold up to ten.
+
+When a question is not scoped to one account ("what's on my calendar", "any
+important email"), it means **all of them**. Cover every connected account and
+say which is which; answering from whichever account the tool happened to pick
+looks confident and is wrong — an empty personal calendar is not an empty day.
+When he does name one ("my Outlaw mail"), use only that one.
+
+If a toolkit reports no connected account, or he asks to add one, mint the link
+for him — `jack composio connect <toolkit>` (add `--count N` for N accounts).
+Give him the URL and tell him it expires in about 15 minutes and connects one
+account. Do not ask him to wait for someone else to produce it.
+
 ## Your accounts
 
 Your Telegram bot is `TELEGRAM_BOT_USERNAME`. Your payment card lives behind the

@@ -12,7 +12,7 @@
 #   jack mode [show|set <mode>|run ...]         provider routing (nicks-stack-route)
 #   jack profiles [--json|--rebuild]            runtime profiles (v1.0.3)
 #   jack secrets [status|render|clean]          unified runtime secrets (v1.1.8)
-#   jack composio [status|init|resolve]         Composio session state
+#   jack composio [status|init|connect|resolve] Composio session + accounts
 #   jack verify                                 full deployment verification
 #
 # Installed to /usr/local/bin/jack by platform/bootstrap.sh.
@@ -92,6 +92,15 @@ jack — Taylor AI Platform
   jack composio [status|init|resolve] [--json]
         Live Composio session state: API key, session validity, user, MCP URL,
         header type, scoped toolkits, last verification. Never prints secrets.
+
+  jack composio connect [toolkit] [--count N]
+        Mint OAuth link(s) to connect an account. Composio caps every link at
+        ~15 minutes and one link connects ONE account, so adding three Google
+        identities across gmail/calendar/drive is nine links. Mint them here,
+        when you are ready to click them, instead of asking someone to.
+        Links ADD accounts — they never replace one already connected.
+            jack composio connect                 # one link per toolkit
+            jack composio connect gmail --count 3 # three Gmail accounts
 
   jack verify
         Full deployment verification (platform/verify.sh on the repo).

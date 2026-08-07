@@ -16,10 +16,24 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.12
+version: 1.1.13
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.13 makes several accounts per toolkit actually usable, and stops the
+  connect flow depending on an operator. Binding many accounts was not enough:
+  with two Google Calendars ACTIVE, a tool call still resolved to ONE of them —
+  LIST_CALENDARS returned the personal account's 2 calendars and none of the 5
+  on the work account, which is the quiet-wrong-answer failure ("nothing on
+  today" while the work calendar is full). sessions.create now sets
+  multi_account (enable, max 10 per toolkit), and SOUL.md tells Jack that an
+  unscoped question means every identity. Separately, Composio caps a connect
+  link at 15 minutes and one link connects one account, so three Google
+  identities across gmail/calendar/drive is nine links on nine clocks; that
+  window was missed twice while minting them by hand. `jack composio connect
+  [toolkit] [--count N]` mints them locally, always with allow_multiple so a
+  link adds rather than replaces, and SOUL.md tells Jack to mint them himself
+  when Taylor asks. The link_token is dropped before printing.
   v1.1.12 makes the cheap tier reachable and cuts the per-call prefix again.
   MCP tool schemas turned out to be the larger half of the cost: of the 106
   tools Jack loaded, 81 came from three servers he must not or does not use —
@@ -240,10 +254,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.12
-  bootstrap: 1.1.12
-  update: 1.1.12
-  verify: 1.1.12
+  platform: 1.1.13
+  bootstrap: 1.1.13
+  update: 1.1.13
+  verify: 1.1.13
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2

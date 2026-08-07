@@ -580,9 +580,29 @@ def cmd_init(args) -> int:
                 f"{s} x{n}" for s, n in sorted(multi.items())) +
                 "; tools receive every one and the agent picks per call",
                 file=sys.stderr)
+        # MULTI-ACCOUNT MODE (v1.1.13). Binding several accounts is not enough on
+        # its own: with two Google Calendars connected, a tool call still
+        # resolved to ONE of them — LIST_CALENDARS returned the personal
+        # account's 2 calendars and none of the 5 on the work account. Multiple
+        # accounts were connected and only one was reachable, which is the
+        # quiet-wrong-answer failure mode ("you have nothing on today" while the
+        # work calendar is full).
+        #
+        # ToolRouterMultiAccountConfig is what exposes account selection to the
+        # agent. Left unset it "falls back to org/project-level configuration",
+        # i.e. something not declared here, so it is set explicitly.
+        # require_explicit_selection stays False: with it on, an unscoped
+        # question fails rather than answering, and SOUL.md already tells Jack
+        # to cover every identity when the question is not scoped to one.
+        multi_account = {
+            "enable": True,
+            "max_accounts_per_toolkit": 10,   # API allows 2-10; default is 5
+            "require_explicit_selection": False,
+        }
         try:
             session = client.sessions.create(
                 user_id=user_id, toolkits=slugs, mcp=True,
+                multi_account=multi_account,
                 **({"auth_configs": auth_configs} if auth_configs else {}),
                 **({"connected_accounts": bind} if bind else {}))
         except Exception as exc:  # noqa: BLE001
@@ -756,6 +776,143 @@ def _ts(iso: str) -> str:
     return iso.replace("T", " ").replace("+00:00", " UTC")
 
 
+def cmd_connect(args) -> int:
+    """Mint Composio OAuth link(s) so an account can be connected.  (v1.1.13)
+
+    WHY THIS IS A COMMAND. Composio hard-caps a connect link at 15 minutes —
+    `expires_in`, `ttl`, `expires_in_seconds` and `link_expiry_seconds` are all
+    accepted and all ignored — and one link connects exactly ONE account. Adding
+    three Google identities across gmail/calendar/drive is therefore nine links,
+    each on its own 15-minute clock. While the only way to mint one was an
+    operator doing it by hand, that clock ran out twice before it could be used.
+    Owning the mint locally is the fix; nothing else about the flow changes.
+
+    `allow_multiple` is always sent, so a link ADDS an account rather than
+    replacing the one already connected — verified live: two Google Calendar
+    accounts (work + personal) held ACTIVE at the same time.
+
+    A minted link is a bearer credential for granting access to the user's
+    account, so `link_token` is dropped and never printed; only the redirect_url
+    the user must open is shown.
+    """
+    spec = _spec()
+    user_id = spec.get("user_id") or "taylor"
+    wanted = spec.get("toolkits") or {}
+    auth_map = auth_config_map(spec)
+
+    cred = resolve_credential()
+    if not cred["available"]:
+        print(f"composio: {cred['error']}", file=sys.stderr)
+        return 1
+    key = cred["value"]
+    Composio, err = _sdk()
+    if Composio is None:
+        print(f"composio: {err}", file=sys.stderr)
+        return 1
+    client = Composio(api_key=key)
+
+    resolved, unresolved = resolve_toolkits(client, wanted)
+    included, deferred, _ = partition_toolkits(resolved, auth_map)
+    slugs = [t["slug"] for t in included]
+    if args.toolkit:
+        want = args.toolkit.strip().lower()
+        if want not in slugs:
+            print(f"composio: '{args.toolkit}' is not a connectable toolkit here. "
+                  f"Declared and connectable: {', '.join(slugs) or '(none)'}",
+                  file=sys.stderr)
+            for d in deferred:
+                if d["slug"] == want:
+                    print(f"composio: {want} is DEFERRED — {d['reason']}",
+                          file=sys.stderr)
+            return 2
+        slugs = [want]
+    if not slugs:
+        print("composio: no connectable toolkit is declared", file=sys.stderr)
+        return 1
+
+    # An auth config id is required per toolkit. Managed toolkits do not appear
+    # in platform.yaml's auth_configs map (that map only carries the ones that
+    # need a declared id), so resolve the project's config for each slug.
+    try:
+        configs = {}
+        for a in getattr(client.auth_configs.list(), "items", []) or []:
+            d = a.model_dump() if hasattr(a, "model_dump") else dict(a)
+            tk = d.get("toolkit")
+            tk = tk.get("slug") if isinstance(tk, dict) else tk
+            if tk and d.get("id"):
+                configs.setdefault(str(tk).lower(), str(d["id"]))
+    except Exception as exc:  # noqa: BLE001
+        print(f"composio: could not list auth configs: {lib.scrub(str(exc))[:160]}",
+              file=sys.stderr)
+        return 1
+
+    count = max(1, int(getattr(args, "count", 1) or 1))
+    existing = active_connections(client, user_id, slugs)
+
+    print(f"Composio connect links  (user_id: {user_id})")
+    print("─" * 60)
+    rc = 0
+    for slug in slugs:
+        ac = auth_map.get(slug) or configs.get(slug)
+        if not ac:
+            print(f"  {slug}: no auth config in this project — create one at "
+                  f"platform.composio.dev")
+            rc = 1
+            continue
+        have = len(existing.get(slug) or [])
+        for n in range(count):
+            url, expires, err2 = connect_link(key, ac, user_id)
+            if not url:
+                print(f"  {slug}: FAILED — {err2}")
+                rc = 1
+                continue
+            label = slug if count == 1 else f"{slug} ({n + 1}/{count})"
+            print(f"  {label}")
+            print(f"    {url}")
+            print(f"    expires {expires}  ({have} account(s) already connected)")
+    print("─" * 60)
+    print("Each link connects ONE account and expires in ~15 minutes (Composio's")
+    print("limit, not ours). Open them now; re-run this command for more.")
+    print("After connecting, apply them with:")
+    print("    sudo nicks-stack-composio-session init --new")
+    print("    sudo supervisorctl restart hermes-gateway")
+    return rc
+
+
+def connect_link(api_key: str, auth_config_id: str, user_id: str):
+    """POST /connected_accounts/link -> (redirect_url, expires_at, error).
+
+    The v3 endpoint, not the SDK's connected_accounts.initiate: that path is
+    retired for Composio-managed OAuth configs and answers
+    "Creating connections on this endpoint ... is no longer supported. Use
+    POST /api/v3/connected_accounts/link instead."
+    """
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps({
+        "auth_config_id": auth_config_id,
+        "user_id": user_id,
+        # ADD an account instead of replacing the one already connected.
+        "allow_multiple": True,
+    }).encode()
+    req = urllib.request.Request(
+        "https://backend.composio.dev/api/v3/connected_accounts/link",
+        data=body,
+        headers={"x-api-key": api_key, "Content-Type": "application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        return "", "", f"HTTP {exc.code}: {lib.scrub(exc.read().decode())[:180]}"
+    except Exception as exc:  # noqa: BLE001
+        return "", "", lib.scrub(str(exc))[:180]
+    # link_token grants access to the user's account — never print it.
+    data.pop("link_token", None)
+    return data.get("redirect_url", ""), str(data.get("expires_at", "")), ""
+
+
 def cmd_status(args) -> int:
     data = status(live=not args.offline)
     if args.json:
@@ -920,6 +1077,13 @@ def main() -> int:
                    help="accepted for compatibility; strict is now the default")
     p.add_argument("--allow-partial", action="store_true",
                    help="DANGEROUS: proceed when some declared toolkits are unresolved")
+    p = sub.add_parser("connect", help="mint OAuth link(s) to connect an account")
+    p.add_argument("toolkit", nargs="?", default="",
+                   help="toolkit slug (gmail, googlecalendar, googledrive, "
+                        "notion). Omit for every declared toolkit.")
+    p.add_argument("--count", type=int, default=1,
+                   help="how many links to mint for this toolkit — one per "
+                        "account you intend to connect (default 1)")
     p = sub.add_parser("status", help="live diagnostics (presence only)")
     p.add_argument("--json", action="store_true")
     p.add_argument("--offline", action="store_true",
@@ -929,8 +1093,8 @@ def main() -> int:
     p = sub.add_parser("deps", help="prove dependencies resolve from the venv, not the system")
     p.add_argument("--json", action="store_true")
     args = ap.parse_args()
-    return {"init": cmd_init, "status": cmd_status, "resolve": cmd_resolve,
-            "deps": cmd_deps}[args.cmd](args)
+    return {"init": cmd_init, "connect": cmd_connect, "status": cmd_status,
+            "resolve": cmd_resolve, "deps": cmd_deps}[args.cmd](args)
 
 
 if __name__ == "__main__":
