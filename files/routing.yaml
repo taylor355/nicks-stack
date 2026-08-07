@@ -51,13 +51,19 @@ version: 1
 #      the work is mechanical, so it is a straight 3x cut with no judgement lost.
 #      A job that needs more overrides with `hermes cron create --model`.
 #
-#   B. INTERACTIVE -> DELEGATION, declared in SOUL.md under "Model routing".
-#      Jack answers on Sonnet and hands mechanical sub-tasks to a Haiku
-#      sub-agent via the delegate tool's `model` override (delegate_tool.py
-#      accepts model/provider per call). The router is the model itself, with
-#      the whole question in front of it, and it costs no extra call — a
-#      separate classifier would have to be paid for on every message and would
-#      decide with less information.
+#      B. INTERACTIVE -> DELEGATION. config.yaml `delegation.model:
+#      claude-haiku-4-5` puts every sub-agent on the cheap tier, and SOUL.md
+#      tells Jack when a sub-task is mechanical enough to hand down. The router
+#      is the model itself, with the whole question in front of it, and it costs
+#      no extra call — a separate classifier would be paid for on every message
+#      and would decide with strictly less information.
+#
+#      Verified the hard way: the first version told Jack to pass a model
+#      override to `delegate_task`. He ran the task and reported that the tool
+#      exposes no such parameter — delegate_tool.py's model/provider arguments
+#      are internal and never reach the tool schema — so the sub-agent quietly
+#      inherited Sonnet and the "saving" was zero. `delegation.model` is the
+#      supported control and needs no per-call argument.
 #
 # What was deliberately NOT done: making Haiku the gateway default and having it
 # escalate. It is one line in config.yaml (`model.default`) and it works, but it

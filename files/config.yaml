@@ -229,8 +229,28 @@ memory:
   provider: ''
   nudge_interval: 10
   flush_min_turns: 6
+# Sub-agents run on the cheap tier  (v1.1.12 — routing axis B)
+#
+# THIS is the interactive router. Jack answers on Sonnet; anything he delegates
+# runs on Haiku, automatically, so his only decision is *whether* a sub-task is
+# mechanical — the judgement call a model is actually good at. SOUL.md → "Model
+# routing" tells him when to make it.
+#
+# Corrected after a live test. The first attempt told Jack to pass a model
+# override to `delegate_task`; he ran the task and reported back that the tool
+# exposes no such parameter — the model/provider arguments in delegate_tool.py
+# are internal to the Python function and never reach the tool schema the model
+# sees, so the sub-agent silently inherited Sonnet. `delegation.model` is the
+# supported control (config_defaults.py:1601, "empty = inherit parent model"),
+# and it is the better shape anyway: one declaration instead of a per-call
+# argument the model has to remember on every delegation.
+#
+# inherit_mcp_toolsets stays true (the default) so a delegated sub-task keeps
+# Composio and can still read Calendar/Gmail/Drive/Notion.
 delegation:
   max_iterations: 50
+  model: claude-haiku-4-5
+  provider: anthropic
 skills:
   creation_nudge_interval: 15
 approvals:

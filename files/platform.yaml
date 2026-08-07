@@ -30,8 +30,10 @@ description: >-
   per-message model hook: cron.model pins scheduled work to Haiku (that is where
   unattended spend lives and the work is mechanical), and SOUL.md makes Jack
   route interactively by DELEGATING mechanical sub-tasks to a Haiku sub-agent
-  via the delegate tool's model override — the router is the model itself, with
-  the whole question in view, at no extra call. Making Haiku the gateway default
+  via delegation.model — the router is the model itself, with the whole question
+  in view, at no extra call. (The first attempt used a per-call model override on
+  delegate_task; a live test proved that parameter is internal and never reaches
+  the tool schema, so the sub-agent silently inherited Sonnet.) Making Haiku the gateway default
   is documented as a supported one-line flip but is not the default, because it
   puts the weaker model in charge of spotting a hard question and it fails
   silently rather than escalating.
