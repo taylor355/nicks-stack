@@ -16,10 +16,25 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.11
+version: 1.1.12
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.12 makes the cheap tier reachable and cuts the per-call prefix again.
+  MCP tool schemas turned out to be the larger half of the cost: of the 106
+  tools Jack loaded, 81 came from three servers he must not or does not use —
+  agentmail (25, which SOUL.md forbids him from touching), agentphone (28, a
+  bridge with no key) and orgo (28, remote-VM lifecycle for an assistant that
+  runs on the box). Those plus x-docs now ship disabled, removing no capability
+  Jack was permitted to use. Routing gets two real axes, because Hermes has no
+  per-message model hook: cron.model pins scheduled work to Haiku (that is where
+  unattended spend lives and the work is mechanical), and SOUL.md makes Jack
+  route interactively by DELEGATING mechanical sub-tasks to a Haiku sub-agent
+  via the delegate tool's model override — the router is the model itself, with
+  the whole question in view, at no extra call. Making Haiku the gateway default
+  is documented as a supported one-line flip but is not the default, because it
+  puts the weaker model in charge of spotting a hard question and it fails
+  silently rather than escalating.
   v1.1.11 is the cost-and-capacity pass, driven by measurement rather than
   guesswork. Jack's cached prefix is ~33,555 tokens, and agent.log showed every
   turn's FIRST call arriving with no cache hit while calls 2..N inside the same
@@ -223,11 +238,11 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.11
-  bootstrap: 1.1.11
-  update: 1.1.11
-  verify: 1.1.11
-  routing: 1.0.7
+  platform: 1.1.12
+  bootstrap: 1.1.12
+  update: 1.1.12
+  verify: 1.1.12
+  routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
 

@@ -14,6 +14,21 @@
 # `hermes auth add openai-codex` then set default: gpt-5.6-sol / provider: openai-codex.
 # OpenRouter stays available as a future optional provider (OPENROUTER_API_KEY
 # is already in the 1Password map) — set provider: openrouter to route through it.
+# Interactive default  (v1.1.12 — routing axis B)
+#
+# Sonnet, deliberately. This is the model that answers Taylor directly, and the
+# questions he actually asks it — acquisition analysis, insurance/tax reasoning,
+# "what should I do about this email" — are the ones where being wrong is
+# expensive. The cheap tier is reached by DELEGATION (SOUL.md → Model routing),
+# where Sonnet decides what is mechanical and hands that part to Haiku. Deciding
+# per task, with the full question in view, beats classifying the message before
+# anyone has read it — and it costs no extra call.
+#
+# To make the whole interactive path cheap instead, set this to
+# claude-haiku-4-5. It is one line and it works. It is NOT the default because
+# then the model choosing when to escalate is the weaker one, which is the wrong
+# way round: a Haiku that fails to recognise a hard question just answers it
+# badly, and Taylor has no signal that it happened.
 model:
   default: claude-sonnet-5
   provider: anthropic
@@ -141,6 +156,25 @@ compression:
 # an assistant looks like.
 prompt_caching:
   cache_ttl: 1h
+
+# Scheduled work runs on the cheap tier  (v1.1.12 — routing axis A)
+#
+# Cron is where unattended spend accumulates: briefings, digests and watchers
+# fire on a schedule whether or not anyone reads them, and the work is
+# mechanical — fetch, filter, format. That is Haiku's job, not Sonnet's
+# ($1/$5 per MTok vs $3/$15).
+#
+# `cron.model` is the supported global lever (cron/jobs.py:1165): unpinned jobs
+# follow cron.model in preference to model.default, and Hermes deliberately does
+# NOT engage its model-drift guard for the model axis when this is set, so cron
+# spend stops shadowing interactive `/model` switches. A single job can still
+# override with `hermes cron create --model ...` when it genuinely needs more.
+#
+# Interactive Telegram is untouched and still answers on model.default — see
+# the routing note there.
+cron:
+  model: claude-haiku-4-5
+  model_drift_guard: true
 
 # Fallback chain (v1.1.11). Tried in order when the PRIMARY model fails with a
 # rate-limit, overload or connection error — not for cost routing, which is what
@@ -510,7 +544,11 @@ mcp_servers:
     env:
       ORGO_API_KEY: ${ORGO_API_KEY}
       ORGO_DEFAULT_COMPUTER_ID: ${ORGO_DEFAULT_COMPUTER_ID}
-    enabled: true
+    # disabled v1.1.12 — 28 tool schemas for remote-VM lifecycle control, on
+    # every call, for an assistant whose job is calendar/mail/docs. Jack already
+    # runs ON this box; orgo_desktop_* covers local desktop work. Re-enable for
+    # fleet management.
+    enabled: false
   # Composio Sessions. The entry between the sentinels below is INJECTED at
   # run time by nicks-stack-composio-session, and only once a session has been
   # established and validated. It is deliberately ABSENT otherwise, so Hermes
@@ -525,9 +563,38 @@ mcp_servers:
   # ToolRouter._create_mcp_server_config.
   # >>> composio (runtime-managed) >>>
   # <<< composio <<<
+  # ---------------------------------------------------------------------------
+  # THE THREE BIG ONES ARE OFF  (v1.1.12)
+  # ---------------------------------------------------------------------------
+  # MCP tool schemas are billed on every call to every model, exactly like the
+  # built-in toolsets, and they were the larger half of the problem. Counted
+  # with `hermes mcp test`:
+  #
+  #     agentmail   25 tools     agentphone  28 tools     orgo  28 tools
+  #     obsidian    14 tools     composio     6 tools     x-docs   3 tools
+  #
+  # 81 of the 106 tools Jack loaded came from three servers he must not or does
+  # not use:
+  #
+  #   agentmail   SOUL.md reserves it for the future autonomous business agents
+  #               and forbids Jack from touching the user's mail with it —
+  #               "Composio Gmail is the only source". It was connecting anyway
+  #               and charging 25 tool schemas per call for a capability the
+  #               agent is instructed never to invoke.
+  #   agentphone  the bridge is intentionally dormant (no AGENTPHONE_API_KEY);
+  #               verify.sh already reports it that way.
+  #   orgo        remote-VM lifecycle control. Useful for fleet work, not for
+  #               reading Taylor's calendar, and Jack runs ON the box it drives.
+  #   x-docs      X/Twitter API documentation. 3 tools, no exec-assistant use.
+  #
+  # This is the single largest token saving available and it removes no
+  # capability Jack was permitted to use. `enabled: true` restores any of them
+  # for the next gateway start; keys, urls and env references are untouched.
   agentmail:
     url: https://mcp.agentmail.to/mcp
-    enabled: true
+    # disabled v1.1.12 — 25 tool schemas per call for a server SOUL.md forbids
+    # Jack from using. Re-enable when the business agents actually need it.
+    enabled: false
     headers:
       x-api-key: ${AGENTMAIL_API_KEY}
   agentphone:
@@ -538,7 +605,8 @@ mcp_servers:
     env:
       AGENTPHONE_API_KEY: ${AGENTPHONE_API_KEY}
       AGENTPHONE_BASE_URL: https://api.agentphone.ai
-    enabled: true
+    # disabled v1.1.12 — 28 tool schemas for a bridge with no key (dormant)
+    enabled: false
   agent-cards:
     url: https://mcp.agentcard.sh/mcp
     auth: oauth
@@ -548,7 +616,8 @@ mcp_servers:
   x-docs:
     url: https://docs.x.com/mcp
     connect_timeout: 60.0
-    enabled: true
+    # disabled v1.1.12 — X API documentation, 3 tools, no exec-assistant use
+    enabled: false
   # xapi (user-context X API via xurl) MUST ship disabled: unconfigured `xurl mcp`
   # opens an interactive browser OAuth on every connect/probe. To enable:
   #   xurl auth apps add hermes-x --client-id … --client-secret …

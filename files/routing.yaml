@@ -33,6 +33,41 @@
 # ==========================================================================
 version: 1
 
+# --------------------------------------------------------------------------
+# How a model actually gets chosen  (v1.1.12)
+# --------------------------------------------------------------------------
+# The modes below are the MANUAL axis — someone names a mode. That was the whole
+# story until v1.1.12, which is why `fast` existed and nothing ever reached it:
+# every Telegram message ran on the gateway default and the cheap tier was
+# unreachable in practice.
+#
+# Hermes has no per-message model hook. Profile routing keys on platform and
+# chat_id (a Discord feature), not on what was said, and there is no per-turn
+# override. So automatic routing had to come from somewhere real, and there were
+# exactly two supported places:
+#
+#   A. SCHEDULED WORK -> config.yaml `cron.model: claude-haiku-4-5`.
+#      Unpinned cron jobs run on Haiku. This is where unattended spend lives and
+#      the work is mechanical, so it is a straight 3x cut with no judgement lost.
+#      A job that needs more overrides with `hermes cron create --model`.
+#
+#   B. INTERACTIVE -> DELEGATION, declared in SOUL.md under "Model routing".
+#      Jack answers on Sonnet and hands mechanical sub-tasks to a Haiku
+#      sub-agent via the delegate tool's `model` override (delegate_tool.py
+#      accepts model/provider per call). The router is the model itself, with
+#      the whole question in front of it, and it costs no extra call — a
+#      separate classifier would have to be paid for on every message and would
+#      decide with less information.
+#
+# What was deliberately NOT done: making Haiku the gateway default and having it
+# escalate. It is one line in config.yaml (`model.default`) and it works, but it
+# puts the weaker model in charge of recognising a hard question — and when it
+# fails it does not escalate, it just answers badly, silently.
+#
+# `deep` (Opus) stays manual and confirmation-gated on purpose; nothing
+# escalates into it automatically.
+# --------------------------------------------------------------------------
+
 # The mode used when nobody has selected one. `smart` is the gateway default,
 # so this matches model.default in config.yaml on purpose.
 default_mode: smart
