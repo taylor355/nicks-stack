@@ -319,6 +319,26 @@ platform_toolsets:
     - terminal
     - todo
     - vision
+  # cron gets the same trim (v1.1.11). Scheduled jobs — briefings, digests,
+  # watchers — are where unattended token spend accumulates, and a cron turn
+  # runs as platform=cron, NOT telegram, so the list above does not cover it.
+  # Measured: a trivial cron turn billed in=33,558 tokens with the telegram trim
+  # already deployed, identical to before it, which is what exposed the gap.
+  # Composio and the other MCP servers are unaffected — MCP tools are registered
+  # separately from these built-in toolsets, so scheduled jobs keep Calendar,
+  # Gmail, Drive and Notion.
+  cron:
+    - clarify
+    - code_execution
+    - cronjob
+    - delegation
+    - file
+    - memory
+    - session_search
+    - skills
+    - terminal
+    - todo
+    - vision
   discord:
     - browser
     - clarify
