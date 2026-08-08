@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.1.21"
+readonly SCRIPT_VERSION="1.1.22"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 

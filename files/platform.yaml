@@ -16,10 +16,19 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.21
+version: 1.1.22
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.22 points Jack at the databases where follow-ups actually live. In the
+  first brief he could not re-confirm "Follow up with Rich - CA Property" and
+  said so rather than guessing, which was the right behaviour but the wrong
+  outcome: he had searched page titles instead of querying the database holding
+  the rows. Tasks DB (2685a2ef) carries 36 such rows and ATC Tasks DB (2a15a2ef)
+  carries Anderson's, both discovered by walking the parents of the follow-up
+  pages. SOUL.md now names both ids, tells him to use NOTION_QUERY_DATABASE, and
+  to check status and date fields rather than assuming a row is closed. That is
+  what makes follow-up radar reliable instead of best-effort.
   v1.1.21 tunes the escalation rule from Taylor's first real correction, and adds
   Signl. The morning brief worked end to end (three calendars, three inboxes,
   four items surfaced, one recommendation) but ORDERED them wrong: it led with a
@@ -358,10 +367,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.21
-  bootstrap: 1.1.21
-  update: 1.1.21
-  verify: 1.1.21
+  platform: 1.1.22
+  bootstrap: 1.1.22
+  update: 1.1.22
+  verify: 1.1.22
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
