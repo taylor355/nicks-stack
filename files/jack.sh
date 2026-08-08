@@ -12,7 +12,7 @@
 #   jack mode [show|set <mode>|run ...]         provider routing (nicks-stack-route)
 #   jack profiles [--json|--rebuild]            runtime profiles (v1.0.3)
 #   jack secrets [status|render|clean]          unified runtime secrets (v1.1.8)
-#   jack composio [status|init|connect|resolve] Composio session + accounts
+#   jack composio [status|init|connect|accounts] Composio session + accounts
 #   jack skills [status|prune]                  always-on skill index (v1.1.15)
 #   jack verify                                 full deployment verification
 #
@@ -102,6 +102,13 @@ jack — Taylor AI Platform
         Links ADD accounts — they never replace one already connected.
             jack composio connect                 # one link per toolkit
             jack composio connect gmail --count 3 # three Gmail accounts
+
+  jack composio accounts [--json]
+        Map every connected account to the human identity behind it. The
+        `account` field in COMPOSIO_MULTI_EXECUTE_TOOL wants the ca_... id, NOT
+        an email address: an email works on googlecalendar and fails on gmail
+        with "No account found matching ...". ids change on reconnect, so read
+        them here rather than hard-coding them.
 
   jack skills [status|prune]
         The always-on skill index. Every installed skill costs ~65-90 bytes on

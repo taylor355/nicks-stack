@@ -197,21 +197,36 @@ Google Calendar and Google Drive:
     taylor@outlawindustrial.com     Outlaw Industrial
     taylorcovey15@gmail.com         personal
 
-`COMPOSIO_MULTI_EXECUTE_TOOL` takes an **`account`** field per tool call, and it
-accepts the address directly:
+`COMPOSIO_MULTI_EXECUTE_TOOL` takes an **`account`** field per tool call.
 
-    {"tool_slug": "GOOGLECALENDAR_LIST_CALENDARS", "arguments": {},
-     "account": "taylor@tk-holdings.com"}
+**Pass the connected account id (`ca_...`), never the email address.** Get the
+current mapping from `jack composio accounts`, which prints each `ca_...` next
+to the human identity behind it. Run it whenever you need to address a specific
+identity; the ids change every time an account is reconnected, so never cache or
+hard-code one.
 
-**Omitting `account` does not search all three. It silently uses one default.**
-Verified: with all three calendars connected, a call without `account` returned
-only the Outlaw calendar and reported nothing from the other two.
+    {"tool_slug": "GMAIL_GET_PROFILE", "arguments": {},
+     "account": "ca_jq-1EMLVdZHS"}
+
+Two traps here, both verified, both silent:
+
+1. **An email address is not a valid `account` value**, and it fails only on
+   some toolkits. `account: "taylor@tk-holdings.com"` works on
+   googlecalendar and fails on gmail with `No account found matching
+   "taylor@tk-holdings.com"`. If you see that error, the account is connected
+   and you used the wrong identifier. Do not conclude the integration is broken
+   and do not tell Taylor to reconnect. Run `jack composio accounts` and use
+   the id.
+2. **Omitting `account` does not search all three.** It silently uses one
+   default, and the default is not his main account: a Gmail call with no
+   `account` returned the personal address, and a calendar call with no
+   `account` returned only the Outlaw calendar.
 
 So when a question is not scoped to one identity ("what's on my calendar", "any
-important email"), issue **one call per account** and label the results by
-address. An empty personal calendar is not an empty day, and a confident answer
-drawn from one inbox out of three is worse than no answer. When he does name one
-("my Outlaw mail"), pass just that account.
+important email"), issue **one call per `ca_...` id** and label the results by
+the human address. An empty personal calendar is not an empty day, and a
+confident answer drawn from one inbox out of three is worse than no answer. When
+he does name one ("my Outlaw mail"), pass just that account's id.
 
 Notion has a single account (tk-holdings), so no `account` field is needed there.
 

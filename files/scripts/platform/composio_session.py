@@ -776,6 +776,134 @@ def _ts(iso: str) -> str:
     return iso.replace("T", " ").replace("+00:00", " UTC")
 
 
+# Cheap identity probes per toolkit: (tool slug, dotted field path). "__primary__"
+# means "the calendar flagged primary", whose id IS the account address.
+IDENTITY_PROBES = {
+    "gmail":          [("GMAIL_GET_PROFILE", "emailAddress")],
+    "googlecalendar": [("GOOGLECALENDAR_LIST_CALENDARS", "__primary__")],
+    "googledrive":    [("GOOGLEDRIVE_ABOUT", "user.emailAddress"),
+                       ("GOOGLEDRIVE_GET_ABOUT", "user.emailAddress")],
+    "notion":         [("NOTION_GET_ABOUT_ME", "bot.owner.user.person.email")],
+}
+
+
+def _dig(obj, path: str):
+    cur = obj
+    for part in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def account_identity(client, user_id: str, toolkit: str, ca_id: str) -> str:
+    """Which human account a connected-account id actually is.
+
+    A `ca_...` is opaque, and Taylor runs three Google identities, so a report
+    that lists only ids is unreadable and a call that guesses is wrong. Resolved
+    live with one cheap call per connection.
+    """
+    for slug, field in IDENTITY_PROBES.get(toolkit, []):
+        try:
+            res = client.tools.execute(slug, {}, user_id=user_id,
+                                       connected_account_id=ca_id,
+                                       dangerously_skip_version_check=True)
+            data = res if isinstance(res, dict) else res.model_dump()
+            if not data.get("successful"):
+                continue
+            payload = data.get("data") or {}
+            if field == "__primary__":
+                for cal in (payload.get("calendars") or payload.get("items") or []):
+                    if isinstance(cal, dict) and cal.get("primary"):
+                        return str(cal.get("id") or cal.get("summary") or "")
+                continue
+            value = _dig(payload, field)
+            if value:
+                return str(value)
+        except Exception:  # noqa: BLE001 - identity is a nicety, never fatal
+            continue
+    return "(identity unresolved)"
+
+
+def cmd_accounts(args) -> int:
+    """Map every connected account to the human identity behind it.
+
+    WHY THIS EXISTS (v1.1.17). COMPOSIO_MULTI_EXECUTE_TOOL's `account` field is
+    documented as "the alias (e.g. 'work') or account ID". An email address is
+    NEITHER, and the failure is toolkit-dependent, which is the worst kind:
+
+        account="taylor@tk-holdings.com"  GOOGLECALENDAR_LIST_CALENDARS -> works
+        account="taylor@tk-holdings.com"  GMAIL_GET_PROFILE
+                                          -> "No account found matching ..."
+        account="ca_jq-1EMLVdZHS"         GMAIL_GET_PROFILE -> works
+        account omitted                   GMAIL_GET_PROFILE -> the PERSONAL
+                                          account, silently
+
+    So addressing by email looks correct until it is not, and the agent that
+    hits the Gmail failure reasonably concludes "nothing is connected" and
+    reports a broken integration. The `ca_...` id is the form that works
+    everywhere; this command is where the agent gets it, because those ids
+    change on every reconnect and must never be hard-coded.
+    """
+    spec = _spec()
+    user_id = spec.get("user_id") or "taylor"
+    wanted = spec.get("toolkits") or {}
+    slugs = sorted({str(v).lower() for v in wanted.values() if v})
+
+    cred = resolve_credential()
+    if not cred["available"]:
+        print(f"composio: {cred['error']}", file=sys.stderr)
+        return 1
+    Composio, err = _sdk()
+    if Composio is None:
+        print(f"composio: {err}", file=sys.stderr)
+        return 1
+    client = Composio(api_key=cred["value"])
+
+    try:
+        res = client.connected_accounts.list(user_ids=[user_id], statuses=["ACTIVE"],
+                                             limit=100)
+    except Exception as exc:  # noqa: BLE001
+        print(f"composio: could not list accounts: {lib.scrub(str(exc))[:160]}",
+              file=sys.stderr)
+        return 1
+
+    by: dict[str, list[str]] = {}
+    for a in getattr(res, "items", None) or []:
+        d = a.model_dump() if hasattr(a, "model_dump") else dict(a)
+        toolkit = d.get("toolkit")
+        slug = (toolkit.get("slug") if isinstance(toolkit, dict) else toolkit) or ""
+        if d.get("id"):
+            by.setdefault(str(slug).lower(), []).append(str(d["id"]))
+
+    rows = []
+    for slug in sorted(set(list(by) + slugs)):
+        for ca_id in by.get(slug, []):
+            rows.append({"toolkit": slug, "account_id": ca_id,
+                         "identity": account_identity(client, user_id, slug, ca_id)})
+
+    if getattr(args, "json", False):
+        print(json.dumps({"user_id": user_id, "accounts": rows}, indent=2))
+        return 0
+
+    print(f"Connected accounts  (user_id: {user_id})")
+    print("─" * 68)
+    if not rows:
+        print("  (none) — connect one with: jack composio connect <toolkit>")
+    for slug in sorted({r["toolkit"] for r in rows}):
+        mine = [r for r in rows if r["toolkit"] == slug]
+        print(f"  {slug}  ({len(mine)})")
+        for r in mine:
+            print(f"    {r['account_id']:<20} {r['identity']}")
+    print("─" * 68)
+    print("Pass account_id (the ca_... value) as `account` in")
+    print("COMPOSIO_MULTI_EXECUTE_TOOL. An email address is NOT accepted there:")
+    print("it happens to work on googlecalendar and fails on gmail with")
+    print('"No account found matching ...". Omitting `account` silently uses one')
+    print("default account rather than searching them all.")
+    return 0
+
+
 def cmd_connect(args) -> int:
     """Mint Composio OAuth link(s) so an account can be connected.  (v1.1.13)
 
@@ -1084,6 +1212,8 @@ def main() -> int:
     p.add_argument("--count", type=int, default=1,
                    help="how many links to mint for this toolkit — one per "
                         "account you intend to connect (default 1)")
+    p = sub.add_parser("accounts", help="map connected accounts to identities")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("status", help="live diagnostics (presence only)")
     p.add_argument("--json", action="store_true")
     p.add_argument("--offline", action="store_true",
@@ -1093,8 +1223,9 @@ def main() -> int:
     p = sub.add_parser("deps", help="prove dependencies resolve from the venv, not the system")
     p.add_argument("--json", action="store_true")
     args = ap.parse_args()
-    return {"init": cmd_init, "connect": cmd_connect, "status": cmd_status,
-            "resolve": cmd_resolve, "deps": cmd_deps}[args.cmd](args)
+    return {"init": cmd_init, "connect": cmd_connect, "accounts": cmd_accounts,
+            "status": cmd_status, "resolve": cmd_resolve,
+            "deps": cmd_deps}[args.cmd](args)
 
 
 if __name__ == "__main__":

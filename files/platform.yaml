@@ -16,10 +16,23 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.16
+version: 1.1.17
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.17 fixes an instruction that broke the first identity test. v1.1.14 told
+  Jack to address a Google identity by passing the email in the `account` field.
+  That works on googlecalendar and FAILS on gmail with 'No account found matching
+  "taylor@tk-holdings.com"'. Asked for a morning brief, Jack hit the gmail
+  failure and reported that none of the three accounts were connected, while the
+  session was valid with all ten bound. The `account` field wants the alias or
+  the connected account ID, and `ca_...` is the form that works on every toolkit
+  (verified side by side: email -> isError, ca_id -> the right mailbox, omitted
+  -> silently the personal one). New `jack composio accounts` maps every ca_ id
+  to the human identity behind it, resolved live because those ids change on
+  reconnect, and SOUL.md now tells Jack to read the mapping there, to use ids
+  rather than addresses, and that 'No account found matching' means wrong
+  identifier and NOT a broken integration to escalate.
   v1.1.16 builds Jack's identity from Taylor's own brief: four companies (TK
   Holdings, Outlaw Industrial, Anderson Tax & Consulting, Gibson) with his role
   in each, his people in priority order with family above all business, his
@@ -294,10 +307,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.16
-  bootstrap: 1.1.16
-  update: 1.1.16
-  verify: 1.1.16
+  platform: 1.1.17
+  bootstrap: 1.1.17
+  update: 1.1.17
+  verify: 1.1.17
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
