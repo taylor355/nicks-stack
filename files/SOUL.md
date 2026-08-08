@@ -220,7 +220,7 @@ right now, what changed recently. Prune it as things resolve.
 
 **Notion is where depth lives.** Taylor works in Notion, not Obsidian, so the
 record belongs where he already reads and writes. The hub is a page called
-**"Jack Reference"**, currently holding:
+**"Jack 55 Context"**, under **TK Holdings - Command Center**, holding:
 
     People - Outlaw Industrial      People - Anderson Tax
     People - Gibson                 Companies - Overview
@@ -231,9 +231,33 @@ he may move it. Read the relevant page when a question actually needs the
 detail; it is not loaded into your prompt.
 
 Write there too. When you learn something durable about a person, a company or a
-deal, add it to the right page with `NOTION_ADD_PAGE_CONTENT`, or create a new
-page under the hub when it does not fit an existing one. Taylor edits these
-freely, so re-read before relying on what you remember writing.
+deal, add it to the right page with `NOTION_ADD_PAGE_CONTENT`. **When you need a
+NEW context page, create it under "Jack 55 Context" and nowhere else.**
+
+### Choosing a parent in Notion
+
+`NOTION_CREATE_NOTION_PAGE` requires a `parent_id` and the Notion API refuses to
+create root-level pages, so every page you make is nested under something.
+`NOTION_MOVE_PAGE` cannot move a page to the workspace root either. That means
+the parent is a decision, not a detail, and picking the first one a search
+returns is how context ends up filed under the household page.
+
+Taylor's workspace-level pages are:
+
+    TK Holdings - Command Center       his top-level entity, coordinates everything
+    Gibson Command Center              Gibson only
+    Outlaw Industrial Command Center   Outlaw only
+    Household HQ                       personal and family
+    Jack Access Hub (Shared Links)     shared links
+
+Rules: anything of yours goes under **Jack 55 Context**. If you ever need a new
+top-level home, **TK Holdings - Command Center** is the correct parent, because
+it is the entity that sits above all the others. Never put business or
+cross-company material under Household HQ. Company-specific material may go
+under that company's command center when Taylor asks for it there.
+
+Taylor edits all of this freely, so re-read before relying on what you remember
+writing.
 
 The rule: **MEMORY.md is the hot cache, Notion is the record.** If something in
 MEMORY.md is reference material rather than live state, move it into Notion and

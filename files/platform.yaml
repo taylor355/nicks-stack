@@ -16,10 +16,23 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.19
+version: 1.1.20
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.20 puts Jack's Notion context where it belongs and encodes how to choose
+  a parent. v1.1.19 filed it under "Household HQ" because the parent was taken
+  as the first workspace-level page a generic search returned, which is not a
+  decision. A targeted search finds five: TK Holdings - Command Center, Gibson
+  Command Center, Outlaw Industrial Command Center, Household HQ, and Jack
+  Access Hub. TK Holdings is the entity that sits above the others by Taylor's
+  own description, so the hub is now "Jack 55 Context" under TK Holdings, with
+  the five context pages recreated beneath it and a link index on the hub. The
+  misfiled originals are archived. SOUL.md now states the constraint (the Notion
+  API refuses root-level page creation and MOVE_PAGE cannot target the root, so
+  a parent is always a real choice), lists the workspace-level pages, and rules
+  that new context pages go under Jack 55 Context, that TK Holdings is the
+  fallback parent, and that business material never goes under Household HQ.
   v1.1.19 moves the record from Obsidian to Notion, because Taylor does not use
   Obsidian. The reference material seeded in v1.1.18 (people per company, the
   companies overview, the Anderson acquisition thesis) now lives in a Notion
@@ -332,10 +345,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.19
-  bootstrap: 1.1.19
-  update: 1.1.19
-  verify: 1.1.19
+  platform: 1.1.20
+  bootstrap: 1.1.20
+  update: 1.1.20
+  verify: 1.1.20
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
