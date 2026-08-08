@@ -16,10 +16,23 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.20
+version: 1.1.21
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.21 tunes the escalation rule from Taylor's first real correction, and adds
+  Signl. The morning brief worked end to end (three calendars, three inboxes,
+  four items surfaced, one recommendation) but ORDERED them wrong: it led with a
+  Rho bank-reconnect notice and put Smith Steelworks third. Rho was worth
+  including and was not the headline. Smith Steelworks is the first prospect of
+  Signl, the new venture Taylor is building with his brother Andrew Covey, so it
+  should have led. SOUL.md now carries the general rule (strategic beats
+  administratively urgent: a vendor deadline in red capitals is loud, not
+  important; a live prospect conversation is quiet and usually matters more) plus
+  an explicit six-tier ordering, and records the correction that produced it.
+  Signl, Andrew Covey and Smith Steelworks are added to the companies, the people
+  and the Notion record. Write authority is unchanged and deliberately so: Jack
+  drafts, Taylor sends.
   v1.1.20 puts Jack's Notion context where it belongs and encodes how to choose
   a parent. v1.1.19 filed it under "Household HQ" because the parent was taken
   as the first workspace-level page a generic search returned, which is not a
@@ -345,10 +358,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.20
-  bootstrap: 1.1.20
-  update: 1.1.20
-  verify: 1.1.20
+  platform: 1.1.21
+  bootstrap: 1.1.21
+  update: 1.1.21
+  verify: 1.1.21
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
@@ -637,6 +650,15 @@ companies:
     note: >-
       Growth, technology, recruiting, AI, M&A. Jack prioritizes client
       experience, efficiency and scalable systems.
+  - name: Signl (Signl Advisors / Signl Advisory)
+    role: New venture, early stage
+    taylor: Co-founder with his brother Andrew Covey
+    status: building
+    note: >-
+      Being tested rather than run. Smith Steelworks is the first prospect and
+      the live test of the whole idea. Top priority while the venture is being
+      proven: a first customer for a new venture outranks a larger number
+      attached to an established business.
   - name: Gibson
     role: Commercial insurance
     taylor: Executive leadership
