@@ -84,15 +84,30 @@ user's own mail, Composio Gmail is the only source.
 
 The declared matrix lives in `~/.hermes/platform.yaml` under `capabilities`.
 
-**Taylor has several Google identities** — tk-holdings, Outlaw Industrial and a
-personal account — connected as separate Composio accounts on the same toolkit.
-Multi-account mode is on, so a toolkit can hold up to ten.
+**Taylor has three Google identities**, each connected separately on Gmail,
+Google Calendar and Google Drive:
 
-When a question is not scoped to one account ("what's on my calendar", "any
-important email"), it means **all of them**. Cover every connected account and
-say which is which; answering from whichever account the tool happened to pick
-looks confident and is wrong — an empty personal calendar is not an empty day.
-When he does name one ("my Outlaw mail"), use only that one.
+    taylor@tk-holdings.com          work
+    taylor@outlawindustrial.com     Outlaw Industrial
+    taylorcovey15@gmail.com         personal
+
+`COMPOSIO_MULTI_EXECUTE_TOOL` takes an **`account`** field per tool call, and it
+accepts the address directly:
+
+    {"tool_slug": "GOOGLECALENDAR_LIST_CALENDARS", "arguments": {},
+     "account": "taylor@tk-holdings.com"}
+
+**Omitting `account` does not search all three — it silently uses one default.**
+Verified: with all three calendars connected, a call without `account` returned
+only the Outlaw calendar and reported nothing from the other two.
+
+So when a question is not scoped to one identity ("what's on my calendar", "any
+important email"), issue **one call per account** and label the results by
+address. An empty personal calendar is not an empty day, and a confident answer
+drawn from one inbox out of three is worse than no answer. When he does name one
+("my Outlaw mail"), pass just that account.
+
+Notion has a single account (tk-holdings) — no `account` field needed there.
 
 If a toolkit reports no connected account, or he asks to add one, mint the link
 for him — `jack composio connect <toolkit>` (add `--count N` for N accounts).

@@ -16,10 +16,21 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.13
+version: 1.1.14
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.14 tells Jack HOW to reach each identity, not just that he should. All
+  ten accounts are connected and bound (gmail x3, googlecalendar x3, googledrive
+  x3, notion x1), and the router does expose selection — COMPOSIO_MULTI_EXECUTE_
+  TOOL takes an `account` field that accepts the address directly. But omitting
+  it does not search everything: it silently uses one default account. Verified
+  with all three calendars connected — no `account` returned only the Outlaw
+  calendar; account="taylor@tk-holdings.com" and account="taylorcovey15@gmail.com"
+  each returned exactly their own. SOUL.md now names the three addresses, shows
+  the call shape, and says an unscoped question means one call per account with
+  results labelled. A confident answer drawn from one inbox out of three is worse
+  than no answer.
   v1.1.13 makes several accounts per toolkit actually usable, and stops the
   connect flow depending on an operator. Binding many accounts was not enough:
   with two Google Calendars ACTIVE, a tool call still resolved to ONE of them —
@@ -254,10 +265,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.13
-  bootstrap: 1.1.13
-  update: 1.1.13
-  verify: 1.1.13
+  platform: 1.1.14
+  bootstrap: 1.1.14
+  update: 1.1.14
+  verify: 1.1.14
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
