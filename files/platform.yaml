@@ -16,10 +16,26 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.15
+version: 1.1.16
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.16 builds Jack's identity from Taylor's own brief: four companies (TK
+  Holdings, Outlaw Industrial, Anderson Tax & Consulting, Gibson) with his role
+  in each, his people in priority order with family above all business, his
+  voice, his nine standing priorities as an explicit tiebreaker, and the
+  escalation rule for what earns an interruption. The stock Hermes persona was
+  REPLACED, not appended to. It opened "You are Hermes Agent, created by Nous
+  Research" and its response contract instructed the agent to "lead with the
+  strongest counterargument" and be "provocative, aggressive, argumentative" -
+  the opposite of the friendly, collaborative, optimistic voice Taylor asked
+  for, and it would have bled into every email drafted on his behalf. The parts
+  worth keeping (never fabricate, verify before finalizing, label uncertainty,
+  no sycophancy, do not cave without new evidence) were kept and rewritten in
+  his register. SOUL.md is now entirely em-dash free, because that is his one
+  absolute style rule and a document that breaks its own rule teaches the wrong
+  thing. platform.yaml gains his real companies; the *_OS rows move to
+  company_builds, which is what they always were.
   v1.1.15 prunes the always-on skill index. 105 installed skills cost 8,803 B
   (~2,200 tokens) of system prompt on EVERY call to EVERY model, before Jack
   reads any of them. Two of the pruned entries are correctness rather than cost:
@@ -278,10 +294,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.15
-  bootstrap: 1.1.15
-  update: 1.1.15
-  verify: 1.1.15
+  platform: 1.1.16
+  bootstrap: 1.1.16
+  update: 1.1.16
+  verify: 1.1.16
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
@@ -309,10 +325,25 @@ services:
 identity:
   name: Jack
   role: Executive AI for Taylor
-  status: platform-only
+  status: built
+  principal: Taylor Covey
   note: >-
-    Identity work has not started. SOUL.md currently holds the stack's stock
-    persona. Building Jack's identity is the first post-freeze sprint.
+    Built in v1.1.16 from Taylor's own brief. SOUL.md carries his four companies,
+    his people and their priority order, his voice, his standing priorities, and
+    the escalation rule. The stock Hermes persona is GONE rather than appended
+    to: it opened "You are Hermes Agent, created by Nous Research" and its
+    response contract told the agent to "lead with the strongest counterargument"
+    and be "provocative, aggressive, argumentative", which is the opposite of the
+    friendly, collaborative, optimistic voice Taylor asked for and would have
+    bled into every email drafted on his behalf. The parts worth keeping (never
+    fabricate, verify before finalizing, label uncertainty, do not be
+    sycophantic, do not cave without new evidence) were kept and rewritten in his
+    register. The whole file is em-dash free, because his one absolute style rule
+    is never to use one and a document that breaks its own rule teaches the wrong
+    thing.
+  operating_principle: >-
+    Protect Taylor's attention. The goal is not to show him everything, it is to
+    make sure he never misses what matters and to handle the rest without asking.
 
 # ==========================================================================
 # Capability routing — ARCHITECTURAL DECISION (2026-08-03)
@@ -528,7 +559,44 @@ forbidden_implementations:
 
 # Company builds that will inherit this platform. Declared, not provisioned —
 # each becomes its own deployment using the same bootstrap/update/verify tools.
+# Taylor's actual businesses, as he described them (v1.1.16). These are the
+# entities Jack reasons about; the `*_OS` rows below are the future per-company
+# agent builds that would inherit this platform, which is a different thing and
+# was previously the only thing recorded here.
 companies:
+  - name: TK Holdings
+    role: Holding and personal operating company
+    taylor: Owner
+    status: active
+    note: >-
+      Top-level entity. Owns the investments and businesses and coordinates
+      everything else.
+  - name: Outlaw Industrial
+    role: Commercial industrial cleaning and field services
+    taylor: Owner, strategy and growth
+    status: active
+    note: >-
+      Long-term strategy, growth, acquisitions, systems, finance, leadership.
+      NOT day-to-day operations. Jack works on operations, profitability,
+      customer experience and scalability.
+  - name: Anderson Tax & Consulting
+    role: Accounting and tax, proactive planning and advisory
+    taylor: Owner, growth and technology
+    status: active
+    note: >-
+      Growth, technology, recruiting, AI, M&A. Jack prioritizes client
+      experience, efficiency and scalable systems.
+  - name: Gibson
+    role: Commercial insurance
+    taylor: Executive leadership
+    status: active
+    note: >-
+      Growth initiatives, recruiting, acquisitions, strategic relationships,
+      large client opportunities. Jack prepares meetings, surfaces
+      opportunities, organizes follow-up and removes administrative work.
+
+# Future per-company agent builds. Declared, not provisioned.
+company_builds:
   - name: Outlaw OS
     status: declared
     note: Inherits this platform. Not yet provisioned.
