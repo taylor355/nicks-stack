@@ -16,10 +16,23 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.14
+version: 1.1.15
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.15 prunes the always-on skill index. 105 installed skills cost 8,803 B
+  (~2,200 tokens) of system prompt on EVERY call to EVERY model, before Jack
+  reads any of them. Two of the pruned entries are correctness rather than cost:
+  SOUL.md forbids reaching Google through anything but Composio — no
+  google-workspace CLI, no himalaya — yet both skills sat in the index telling
+  Jack how to do exactly that. `hermes skills opt-out --remove` is all-or-nothing
+  over BUNDLED skills and would have deleted the useful ones (notion, docx, pdf,
+  xlsx, obsidian, github, claude-code) while keeping this repo's setup-only 23,
+  so the prune is declared in platform.yaml skills.prune and applied by
+  skills_prune.py, which also sets the .no-bundled-skills marker so `hermes
+  update` cannot re-inflate it. Bootstrap runs it after the skills sync, names
+  are validated against path traversal, unlisted skills are never touched, and
+  `sudo hermes skills opt-in --sync` restores everything.
   v1.1.14 tells Jack HOW to reach each identity, not just that he should. All
   ten accounts are connected and bound (gmail x3, googlecalendar x3, googledrive
   x3, notion x1), and the router does expose selection — COMPOSIO_MULTI_EXECUTE_
@@ -265,10 +278,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.14
-  bootstrap: 1.1.14
-  update: 1.1.14
-  verify: 1.1.14
+  platform: 1.1.15
+  bootstrap: 1.1.15
+  update: 1.1.15
+  verify: 1.1.15
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
@@ -374,6 +387,75 @@ capabilities:
 # there is exactly one place references are declared. This block declares only
 # WHICH of them the runtime resolves, whether it is required, and who consumes
 # it. `required: true` means a failure to resolve is a hard failure.
+# ==========================================================================
+# Skill pruning  (v1.1.15)
+# ==========================================================================
+# Every installed skill contributes ~65-90 bytes to an always-on index that is
+# billed on EVERY call to EVERY model. Measured with `hermes prompt-size`: 105
+# skills = 8,803 B (~2,200 tokens) of the system prompt, before Jack has read a
+# single one of them.
+#
+# Most of those are Hermes' BUNDLED skills, not this repo's 23. `hermes skills
+# opt-out --remove` is all-or-nothing and would delete the useful ones while
+# keeping this repo's setup-only set, so the prune is declared here instead:
+# names below are removed, the marker stops them being re-seeded by `hermes
+# update`, and everything unlisted stays.
+#
+# Two of these are CORRECTNESS, not cost. SOUL.md forbids reaching Google
+# through anything but Composio — "Do not install, enable, configure or invoke
+# a Hermes-native Google integration, a google-workspace / gws CLI, or
+# himalaya" — yet both skills sat in the index telling Jack how to do exactly
+# that. A skill that contradicts the architecture is worse than a wasted token.
+#
+# Fully reversible: `sudo hermes skills opt-in --sync` restores the lot.
+skills:
+  prune_bundled: true                 # set the .no-bundled-skills marker
+  prune:
+    # Contradicts SOUL.md capability routing — Google MUST go through Composio.
+    - email/himalaya
+    - productivity/google-workspace
+    # Integrations this platform has disabled (v1.1.9 / v1.1.12).
+    - email/agentmail-setup
+    - productivity/agentphone-setup
+    - social-media/xurl
+    - social-media/x-mcp-integration
+    # Not this agent's job: Jack runs calendar, mail, docs and deal work.
+    - creative/architecture-diagram
+    - creative/ascii-art
+    - creative/ascii-video
+    - creative/baoyu-infographic
+    - creative/claude-design
+    - creative/comfyui
+    - creative/design-md
+    - creative/excalidraw
+    - creative/humanizer
+    - creative/manim-video
+    - creative/p5js
+    - creative/popular-web-designs
+    - creative/pretext
+    - creative/sketch
+    - creative/songwriting-and-ai-music
+    - creative/touchdesigner-mcp
+    - media/gif-search
+    - media/songsee
+    - media/youtube-content
+    - mlops/evaluation
+    - mlops/huggingface-hub
+    - mlops/inference
+    - mlops/models
+    - smart-home/openhue
+    # No Apple devices on this Linux VM — these can never run here.
+    - apple/apple-notes
+    - apple/apple-reminders
+    - apple/findmy
+    - apple/imessage
+    # Research long tail. grounded-research and vendor-tool-evaluation stay.
+    - research/arxiv
+    - research/blogwatcher
+    - research/llm-wiki
+    - research/polymarket
+    - research/research-paper-writing
+
 runtime_secrets:
   dir: /root/.hermes/runtime          # derived tree; 0700, never committed
   file: secrets.env                   # 0600, rebuilt on every gateway start

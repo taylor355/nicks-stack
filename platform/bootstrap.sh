@@ -55,7 +55,7 @@ umask 022
 readonly SCRIPT_NAME="Taylor AI Platform bootstrap"
 # Platform + component versions live in files/platform.yaml (the declared
 # spec). This mirror is only for the banner before that file is deployed.
-readonly SCRIPT_VERSION="1.1.14"
+readonly SCRIPT_VERSION="1.1.15"
 
 readonly HERMES_INSTALL_URL="https://hermes-agent.nousresearch.com/install.sh"
 
@@ -862,6 +862,20 @@ sync_tree_managed "$STAGE/hermes/plugins"        "$HERMES_HOME/plugins"        "
 sync_tree_managed "$STAGE/hermes/skills"         "$HERMES_HOME/skills"         "skills"
 sync_tree_managed "$STAGE/hermes/scripts"        "$HERMES_HOME/scripts"        "scripts"
 sync_tree_managed "$STAGE/hermes/local-packages" "$HERMES_HOME/local-packages" "local-packages"
+
+# --- prune the always-on skill index  (v1.1.15) ---------------------------
+# Runs AFTER the skills tree is synced, so a re-seed by `hermes update` is
+# pruned again on the next deploy rather than silently re-inflating the index.
+# Declared in platform.yaml skills.prune; never touches an unlisted skill.
+# Non-fatal: a bigger prompt is a cost problem, not a broken deployment.
+SKILLS_PRUNE="$HERMES_HOME/scripts/platform/skills_prune.py"
+if [[ -f "$SKILLS_PRUNE" ]]; then
+  if PRUNE_OUT="$(python3 "$SKILLS_PRUNE" apply 2>&1)"; then
+    while IFS= read -r line; do [[ -n "$line" ]] && ok "$line"; done <<< "$PRUNE_OUT"
+  else
+    warn "skill prune reported a problem: ${PRUNE_OUT:-unknown}"
+  fi
+fi
 
 # --- place: vault + Obsidian registry (user data — never clobbered) -------
 sync_tree_preserved "$STAGE/vault" "$VAULT_DIR" "vault"

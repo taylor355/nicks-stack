@@ -13,6 +13,7 @@
 #   jack profiles [--json|--rebuild]            runtime profiles (v1.0.3)
 #   jack secrets [status|render|clean]          unified runtime secrets (v1.1.8)
 #   jack composio [status|init|connect|resolve] Composio session + accounts
+#   jack skills [status|prune]                  always-on skill index (v1.1.15)
 #   jack verify                                 full deployment verification
 #
 # Installed to /usr/local/bin/jack by platform/bootstrap.sh.
@@ -101,6 +102,12 @@ jack — Taylor AI Platform
         Links ADD accounts — they never replace one already connected.
             jack composio connect                 # one link per toolkit
             jack composio connect gmail --count 3 # three Gmail accounts
+
+  jack skills [status|prune]
+        The always-on skill index. Every installed skill costs ~65-90 bytes on
+        EVERY model call whether or not it is used. status reports the count and
+        what platform.yaml still wants pruned; prune applies it.
+        Undo everything with: sudo hermes skills opt-in --sync
 
   jack verify
         Full deployment verification (platform/verify.sh on the repo).
@@ -212,6 +219,14 @@ PROFILES
     sub="${1:-status}"
     [[ $# -gt 0 ]] && shift || true
     exec python3 "$COMPOSIO" "$sub" "$@"
+    ;;
+  skills)
+    PRUNE="${PLATFORM_SCRIPTS}/skills_prune.py"
+    [[ -f "$PRUNE" ]] || die "skills_prune.py not installed — redeploy with platform/bootstrap.sh"
+    sub="${1:-status}"
+    [[ $# -gt 0 ]] && shift || true
+    [[ "$sub" == "prune" ]] && sub="apply"
+    exec python3 "$PRUNE" "$sub" "$@"
     ;;
   manifest)
     sub="${1:-show}"
