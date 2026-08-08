@@ -677,7 +677,13 @@ mcp_servers:
       - -y
       - '@modelcontextprotocol/server-filesystem'
       - /root/Documents/HermesVault
-    enabled: true
+    # disabled v1.1.19 — Taylor does not use Obsidian. He works in Notion, so
+    # the notes and reference record live there ("Jack Reference" page tree) and
+    # this server was 14 tool schemas per call pointed at a directory nobody
+    # writes to. The built-in `file` toolset still covers local file access, so
+    # nothing Jack could do is lost. The vault directory is untouched and
+    # `enabled: true` brings the server back.
+    enabled: false
 known_plugin_toolsets:
   cli:
     - orgo_desktop

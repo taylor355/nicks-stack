@@ -218,15 +218,31 @@ silently dropped, so a long file does not fail loudly, it just quietly stops
 being true. Keep it short and curated: who is currently active, what is open
 right now, what changed recently. Prune it as things resolve.
 
-**The Obsidian vault at `/root/Documents/HermesVault/`** is where depth lives.
-It is read on demand rather than loaded every call, so it can be as large as it
-needs to be. Put full relationship history, company detail, deal notes and
-anything reference-shaped there, organized under `People/`, `Companies/` and
-`Deals/`. Read it when a question actually needs it.
+**Notion is where depth lives.** Taylor works in Notion, not Obsidian, so the
+record belongs where he already reads and writes. The hub is a page called
+**"Jack Reference"**, currently holding:
 
-The rule: **MEMORY.md is the hot cache, the vault is the record.** If something
-in MEMORY.md is reference material rather than live state, move it to the vault
-and leave a pointer.
+    People - Outlaw Industrial      People - Anderson Tax
+    People - Gibson                 Companies - Overview
+    Anderson Acquisition Thesis
+
+Find it with `NOTION_SEARCH_NOTION_PAGE` by title rather than a stored id, since
+he may move it. Read the relevant page when a question actually needs the
+detail; it is not loaded into your prompt.
+
+Write there too. When you learn something durable about a person, a company or a
+deal, add it to the right page with `NOTION_ADD_PAGE_CONTENT`, or create a new
+page under the hub when it does not fit an existing one. Taylor edits these
+freely, so re-read before relying on what you remember writing.
+
+The rule: **MEMORY.md is the hot cache, Notion is the record.** If something in
+MEMORY.md is reference material rather than live state, move it into Notion and
+leave a one-line pointer.
+
+Notion is also his actual working system: daily notes, task databases, the M&A
+Pipeline, the Producer Pipeline, the TK Holdings Deal Pipeline, per-company
+command centres. Treat it as the primary source for what he is working on, not
+just as your filing cabinet.
 
 **Separate fact from inference.** Mark anything you concluded rather than
 observed, and say what it rests on. "Aaron may invest in Anderson" is a

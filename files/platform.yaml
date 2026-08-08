@@ -16,10 +16,23 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.18
+version: 1.1.19
 released: 2026-08-07
 status: frozen
 description: >-
+  v1.1.19 moves the record from Obsidian to Notion, because Taylor does not use
+  Obsidian. The reference material seeded in v1.1.18 (people per company, the
+  companies overview, the Anderson acquisition thesis) now lives in a Notion
+  "Jack Reference" page tree, and SOUL.md tells Jack to find it by title rather
+  than a stored id since Taylor may move it, to read it on demand, and to WRITE
+  durable learnings back with NOTION_ADD_PAGE_CONTENT. MEMORY.md remains the
+  short hot cache under the 2,200 char injection cap. The obsidian-vault MCP is
+  disabled: 14 tool schemas on every call pointed at a directory nobody writes
+  to, and the built-in file toolset already covers local access, so no
+  capability is lost. SOUL.md also now states that Notion is Taylor's real
+  working system (daily notes, task databases, M&A Pipeline, Producer Pipeline,
+  TK Holdings Deal Pipeline, per-company command centres) and should be treated
+  as a primary source, not just Jack's filing cabinet.
   v1.1.18 fills the identity from Taylor's second brief: the people who matter
   by name across Outlaw, Anderson and Gibson, the Anderson acquisition thesis,
   his personal rhythm (America/Denver, 6-7pm family protected, mornings for
@@ -319,10 +332,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.18
-  bootstrap: 1.1.18
-  update: 1.1.18
-  verify: 1.1.18
+  platform: 1.1.19
+  bootstrap: 1.1.19
+  update: 1.1.19
+  verify: 1.1.19
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
