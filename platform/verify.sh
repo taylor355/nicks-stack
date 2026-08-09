@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.24"
+readonly SCRIPT_VERSION="1.1.25"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -883,7 +883,7 @@ print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
 fi
 
 # ==========================================================================
-section "8c. TK Family document processing (v1.1.24)"
+section "8c. TK Family document processing (v1.1.25)"
 # ==========================================================================
 # Jack reads, renames and files the Covey family's scanned documents. Three
 # things can break this silently, so all three are checked here:
@@ -1081,6 +1081,56 @@ print(','.join(map(str,v)) if isinstance(v,list) else ('' if v is None else v))"
     && pass "folder creation denied — the tree cannot grow a '2027' on its own" \
     || warn "folder creation is not denied; the folder table stops being the source of truth"
 fi
+
+# The routing memory (v1.1.25). It is Taylor's data, it grows from his
+# corrections, and it must survive `hermes update` — so it lives outside the
+# repo and outside the files/ tree that bootstrap syncs. Check it is readable
+# and that every rule points at a folder that actually exists: a rule aimed at
+# a path that has been renamed away would file documents into nowhere.
+TK_ROUTE="$(python3 - "$HERMES_HOME/platform.yaml" <<'PYEOF' 2>/dev/null || true
+import sys, json, pathlib, yaml
+spec = (yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}).get("tk_family") or {}
+folders = spec.get("folders") or {}
+path = pathlib.Path(spec.get("routing_file") or "")
+if not path:
+    print(json.dumps({"state": "undeclared"})); raise SystemExit
+if not path.exists():
+    print(json.dumps({"state": "absent", "path": str(path)})); raise SystemExit
+try:
+    d = json.loads(path.read_text())
+except Exception:
+    print(json.dumps({"state": "corrupt", "path": str(path)})); raise SystemExit
+rules, bad = 0, []
+for kind in ("vendors", "addresses", "accounts"):
+    for value, dest in (d.get(kind) or {}).items():
+        rules += 1
+        if dest not in folders:
+            bad.append("%s=%s" % (value, dest))
+print(json.dumps({"state": "ok", "rules": rules, "bad": bad,
+                  "corrections": len(d.get("corrections") or []),
+                  "mode": oct(path.stat().st_mode & 0o777)}))
+PYEOF
+)"
+TR_STATE="$(printf '%s' "$TK_ROUTE" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin).get('state',''))
+except Exception: print('')" 2>/dev/null)"
+case "$TR_STATE" in
+  ok)
+    TR_BAD="$(printf '%s' "$TK_ROUTE" | python3 -c "
+import json,sys; print(','.join(json.load(sys.stdin).get('bad') or []))" 2>/dev/null)"
+    TR_N="$(printf '%s' "$TK_ROUTE" | python3 -c "
+import json,sys; d=json.load(sys.stdin); print('%s rule(s) from %s correction(s)' % (d['rules'], d['corrections']))" 2>/dev/null)"
+    if [[ -z "$TR_BAD" ]]; then
+      pass "routing memory readable, $TR_N, every rule points at a real folder"
+    else
+      fail "routing memory has rule(s) pointing at folders that do not exist: $TR_BAD"
+    fi
+    ;;
+  absent)  warn "routing memory file has not been created yet — Jack will ask about every ambiguous document and learn nothing" ;;
+  corrupt) fail "routing memory file is not valid JSON — Jack cannot read Taylor's filing corrections" ;;
+  *)       warn "tk_family.routing_file is not declared — corrections cannot be remembered" ;;
+esac
 
 # Presence of the credential, via the one canonical resolver. Never its value.
 # Section 8a already walks every declared key, but it reports an optional

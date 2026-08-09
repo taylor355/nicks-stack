@@ -16,10 +16,37 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.24
+version: 1.1.25
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.25 answers "how do I get filing right every single time" with the only
+  honest mechanism: never guess, and remember every answer. The five checks
+  already decide the CATEGORY reliably. What they cannot do is tell which of
+  four properties a power bill belongs to, and no amount of prompting fixes
+  that, because the answer is not on the page in a form anything can reason its
+  way to. So Jack now stops on routing ambiguity the same way he already stopped
+  on unreadable text: he files nothing, names the two or three folders it could
+  be, says what would settle it, and asks. Taylor's answer is written into
+  ~/.hermes/tkfamily_routing.json as an exact rule on the vendor, the service
+  address or the account number, and that document never gets asked about again.
+  Addresses and account numbers outrank vendors, since the vendor gives the
+  category and the address gives the property. The ask rate falls toward zero
+  over a few weeks while accuracy is 100% the whole time, because nothing Jack
+  is unsure about is ever silently filed. `jack tkfamily route` shows and seeds
+  the rules; verify fails if any rule points at a folder that no longer exists.
+  The routing file lives outside the repo so `hermes update` cannot flatten it.
+  Also in this release: SIGNL Advisory is spelled correctly everywhere,
+  including a live rename of the Drive folder (the id is unchanged, so the
+  folder table, the audit and every filing rule still resolve). "Signal
+  Advisory" survives as an alias because a vendor who heard the name over the
+  phone will write it that way. Long descriptive filenames are now explicitly
+  encouraged rather than merely allowed, per Taylor. And the one real hole in
+  the flow is documented and handled: a file dropped straight into Drive has no
+  review card, so a bill found that way is surfaced in the reply with its
+  numbers and created only once Taylor says yes in chat, which is the same human
+  check the card would have given, through a different door. The permanent fix
+  is one tool on the app side that mints a document from a Drive file id.
   v1.1.24 gives Jack the whole tool surface back and moves the safety somewhere
   it belongs. v1.1.23b had withheld fifteen of TK Family's twenty-three tools so
   that "propose, never create" could not be broken by accident. Taylor asked for
@@ -67,16 +94,18 @@ description: >-
   to check status and date fields rather than assuming a row is closed. That is
   what makes follow-up radar reliable instead of best-effort.
   v1.1.21 tunes the escalation rule from Taylor's first real correction, and adds
-  Signl. The morning brief worked end to end (three calendars, three inboxes,
+  SIGNL Advisory. The morning brief worked end to end (three calendars, three inboxes,
   four items surfaced, one recommendation) but ORDERED them wrong: it led with a
   Rho bank-reconnect notice and put Smith Steelworks third. Rho was worth
   including and was not the headline. Smith Steelworks is the first prospect of
-  Signl, the new venture Taylor is building with his brother Andrew Covey, so it
+  SIGNL Advisory, the new venture Taylor is building with his brother Andrew Covey,
+  so it
   should have led. SOUL.md now carries the general rule (strategic beats
   administratively urgent: a vendor deadline in red capitals is loud, not
   important; a live prospect conversation is quiet and usually matters more) plus
   an explicit six-tier ordering, and records the correction that produced it.
-  Signl, Andrew Covey and Smith Steelworks are added to the companies, the people
+  SIGNL Advisory, Andrew Covey and Smith Steelworks are added to the companies,
+  the people
   and the Notion record. Write authority is unchanged and deliberately so: Jack
   drafts, Taylor sends.
   v1.1.20 puts Jack's Notion context where it belongs and encodes how to choose
@@ -404,10 +433,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.24
-  bootstrap: 1.1.24
-  update: 1.1.24
-  verify: 1.1.24
+  platform: 1.1.25
+  bootstrap: 1.1.25
+  update: 1.1.25
+  verify: 1.1.25
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
@@ -505,7 +534,7 @@ capabilities:
     implementation: agentmail-mcp     # mcp_servers.agentmail — installed, kept
     status: reserved
     jack_policy: do-not-use-unless-explicitly-instructed
-    reserved_for: [Outlaw OS, Anderson OS, Signl OS]
+    reserved_for: [Outlaw OS, Anderson OS, SIGNL OS]
 
 # ==========================================================================
 # Runtime secrets (v1.1.8) — the ONE declaration of what the gateway needs
@@ -711,6 +740,31 @@ tk_family:
   # Clearing it is a rename, which he can do himself from his phone.
   parked_prefix: "NEEDS RESHOOT - "
 
+  # The routing memory (v1.1.25). Taylor asked how to get filing right EVERY
+  # time. Judgment alone cannot do that: the five checks decide the category
+  # reliably, but they cannot tell which of four properties a power bill belongs
+  # to, and no amount of prompting fixes that, because the answer is not on the
+  # page in a form a model can reason its way to.
+  #
+  # So there are two halves.
+  #
+  #   Ask instead of guess. Jack already stops below 0.6 confidence on READING.
+  #   He now also stops when the category is clear but the specific folder is
+  #   not, which is the case that was quietly producing wrong answers rather
+  #   than obvious ones.
+  #
+  #   Turn every correction into a rule. When Taylor says "that goes to the
+  #   Bluffdale townhome", the vendor, the service address and the account
+  #   number are written into the routing file, and that document never needs
+  #   asking about again. The ask rate falls to near zero over a few weeks and
+  #   the accuracy is 100% the whole time, because a thing Jack is unsure about
+  #   is never silently filed.
+  #
+  # The file lives outside the repo on purpose. It is Taylor's data, it grows
+  # from his corrections, and `hermes update` must never flatten it.
+  routing_file: /root/.hermes/tkfamily_routing.json
+
+
   schedule: "* * * * *"
   cron_job_name: tk-family-docs
 
@@ -826,8 +880,8 @@ tk_family:
     "4 Business/Gibson/Bills and Receipts": 11gw4NjQabMvmOSwEhxqdCoFAY8LFmVDo
     "4 Business/Cavazos Bop": 1M14A00t6Rz3DyRIAY6cebQ3ieWuKwHu-
     "4 Business/Cavazos Bop/Bills and Receipts": 19y3Zg_pPaK4Lc3Ut76ONQFwvDkPtOW-t
-    "4 Business/Signal Advisory": 1eU-61JrCpiLIjuC54XOs8EuAGAXZn3iM
-    "4 Business/Signal Advisory/Bills and Receipts": 1WMSYt1v7tIlikSlHUvJrOXau16iw8EdP
+    "4 Business/SIGNL Advisory": 1eU-61JrCpiLIjuC54XOs8EuAGAXZn3iM
+    "4 Business/SIGNL Advisory/Bills and Receipts": 1WMSYt1v7tIlikSlHUvJrOXau16iw8EdP
 
     "9 Archive": 1g5Zz-nqIuC4vhnNq7-QC84OlFaxOaf44
 
@@ -845,10 +899,12 @@ tk_family:
     gibson: 4 Business/Gibson
     cavazos bop: 4 Business/Cavazos Bop
     cavazos: 4 Business/Cavazos Bop
-    signal advisory: 4 Business/Signal Advisory
-    signl: 4 Business/Signal Advisory
-    signl advisory: 4 Business/Signal Advisory
-    signl advisors: 4 Business/Signal Advisory
+    signl: 4 Business/SIGNL Advisory
+    signl advisory: 4 Business/SIGNL Advisory
+    signl advisors: 4 Business/SIGNL Advisory
+    # Kept because a vendor who heard the name over the phone will write it this
+    # way, and a misfiled invoice is worse than a redundant alias.
+    signal advisory: 4 Business/SIGNL Advisory
 
 # Implementations that must NOT appear on a Jack deployment. verify.sh checks
 # for each of these; a hit is a critical failure, not an advisory.
@@ -889,7 +945,7 @@ companies:
     note: >-
       Growth, technology, recruiting, AI, M&A. Jack prioritizes client
       experience, efficiency and scalable systems.
-  - name: Signl (Signl Advisors / Signl Advisory)
+  - name: SIGNL Advisory
     role: New venture, early stage
     taylor: Co-founder with his brother Andrew Covey
     status: building
@@ -915,7 +971,7 @@ company_builds:
   - name: Anderson OS
     status: declared
     note: Inherits this platform. Not yet provisioned.
-  - name: Signl OS
+  - name: SIGNL OS
     status: declared
     note: Inherits this platform. Not yet provisioned.
 

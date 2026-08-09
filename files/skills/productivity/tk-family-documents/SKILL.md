@@ -88,6 +88,32 @@ still file it. Emptying the drop zone is the job. Skip
 Taylor that the file was filed but has no card in the app. Do not invent a
 document id and do not leave the file sitting there.
 
+### And if that document needed a task or a bill
+
+This is the one real hole in the flow, so handle it deliberately rather than
+picking a side.
+
+An app-captured document gets a review card, which is where a proposed task or
+bill is approved. A file dropped straight into Drive has no card, so there is
+nothing to propose against and no approval step exists. Creating the bill
+yourself would put a number you read once, unreviewed, into the list Taylor pays
+from. That is the exact mistake the review card exists to catch.
+
+So do not create it, and do not silently drop it either. Put it in your reply,
+in full, and ask:
+
+> Rocky Mountain Power, 117.76, due August 22, for the Heber home. Filed to
+> 2 Home/Utilities/Bills and Receipts. No card in the app since it came straight
+> from the scanner. Want me to add the bill and a task to pay it on the 19th?
+
+If he says yes, use `add_bill` and `create_task` directly. He approved it in
+chat, which is the same human check the card would have given you, just through
+a different door. Say what you created.
+
+The permanent fix is on the app side: one tool that mints a document from a
+Drive file id, so a scanner drop gets a review card like everything else. Until
+that exists, the sentence above is the approval step.
+
 ## The loop
 
 The cron job runs the scan for you. When it wakes you it has already told you
@@ -179,12 +205,13 @@ The six businesses, and the names they appear under on a document:
 | Outlaw Industrial, Outlaw | `4 Business/Outlaw Industrial` |
 | Gibson | `4 Business/Gibson` |
 | Cavazos Bop, Cavazos | `4 Business/Cavazos Bop` |
-| Signal Advisory, Signl, Signl Advisory, Signl Advisors | `4 Business/Signal Advisory` |
+| SIGNL Advisory, SIGNL, Signl, Signal Advisory | `4 Business/SIGNL Advisory` |
 
-Taylor spells the company **Signl**. The Drive folder is named **Signal
-Advisory**. Both refer to the same business, and the folder name is what exists,
-so file into `4 Business/Signal Advisory` and write the vendor as it appears on
-the document.
+The company is **SIGNL Advisory**, capitalised exactly like that, no vowel
+between the G and the N. "Signal Advisory" is kept as an alias only because a
+vendor who heard the name over the phone will write it that way, and a misfiled
+invoice costs more than a redundant alias. When you write the vendor into a
+filename, write it as it appears on the document.
 
 ### Two hard constraints
 
@@ -196,6 +223,34 @@ sprouting a `2027` folder on its own some night in January.
 `record_document_reading` with your best reading and the low confidence score,
 and let a person look. An inbox with three things in it is a working system. A
 tree with three things quietly misfiled is not.
+
+### When the category is clear but the folder is not, ASK
+
+This is a different failure from not being able to read the page, and it is the
+one that used to produce quiet mistakes. You can read a power bill perfectly and
+still not know which of four properties it is for. You can read an invoice
+perfectly and still not know which of six businesses.
+
+When that happens, do not pick the likeliest one. Say so:
+
+1. File nothing. Leave the document where it is.
+2. In your reply, name the document, name the two or three folders it could
+   belong to, and say exactly what would settle it: "there is no service address
+   on this one", or "the account number is not one I have seen before".
+3. When Taylor answers, write the rule down so it never comes up again:
+
+```
+jack tkfamily route add address "512 wasatch ridge drive" "2 Home/Heber Home"
+jack tkfamily route add vendor  "rocky mountain power" "2 Home/Utilities/Bills and Receipts"
+jack tkfamily route add account "8842 1190 3" "2 Home/Utilities/Bills and Receipts"
+```
+
+Then file it.
+
+This is how the filing gets to right every time. Not by guessing better, but by
+never guessing: a document you are sure about is filed immediately, and a
+document you are not sure about is asked about once and permanently known after.
+Asking twice about the same vendor means you forgot to write the rule.
 
 ## What you may do to these files
 
@@ -504,8 +559,8 @@ File by folder id. Never walk the path, never create a folder. Root folder
   "4 Business/Gibson/Bills and Receipts":                       "11gw4NjQabMvmOSwEhxqdCoFAY8LFmVDo",
   "4 Business/Cavazos Bop":                                     "1M14A00t6Rz3DyRIAY6cebQ3ieWuKwHu-",
   "4 Business/Cavazos Bop/Bills and Receipts":                  "19y3Zg_pPaK4Lc3Ut76ONQFwvDkPtOW-t",
-  "4 Business/Signal Advisory":                                 "1eU-61JrCpiLIjuC54XOs8EuAGAXZn3iM",
-  "4 Business/Signal Advisory/Bills and Receipts":              "1WMSYt1v7tIlikSlHUvJrOXau16iw8EdP",
+  "4 Business/SIGNL Advisory":                                  "1eU-61JrCpiLIjuC54XOs8EuAGAXZn3iM",
+  "4 Business/SIGNL Advisory/Bills and Receipts":               "1WMSYt1v7tIlikSlHUvJrOXau16iw8EdP",
 
   "9 Archive":                                        "1g5Zz-nqIuC4vhnNq7-QC84OlFaxOaf44"
 }

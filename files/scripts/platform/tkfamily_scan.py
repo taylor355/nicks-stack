@@ -34,6 +34,8 @@ Usage:
     tkfamily_scan.py            scan, update state, emit the wake gate (cron)
     tkfamily_scan.py --status   human-readable, never touches state or the gate
     tkfamily_scan.py --audit    walk all 45 folders and report what is off
+    tkfamily_scan.py --route    show or add routing rules learned from
+                                Taylor's corrections
 """
 # NOTE ON " / ": Hermes' cron lifecycle guard scans a job's script as if it were
 # a shell command and tries to read every token that looks like a path. A bare
@@ -279,6 +281,118 @@ def item_keys(docs: list, drops: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# routing memory
+# ---------------------------------------------------------------------------
+# Three maps, all of them grown from real corrections rather than guessed at.
+# A lookup here is exact string matching, which is the point: it is the part of
+# filing that must not involve judgment.
+#
+#   vendors   "rocky mountain power"  -> "2 Home/Utilities/Bills and Receipts"
+#   addresses "512 wasatch ridge"     -> "2 Home/Heber Home"
+#   accounts  "8842 1190 3"           -> "2 Home/Utilities/Bills and Receipts"
+#
+# Addresses and account numbers matter more than vendors, because the vendor
+# tells you the category and the address tells you WHICH of four properties.
+ROUTING_KINDS = ("vendors", "addresses", "accounts")
+
+
+def routing_path() -> Path:
+    raw = spec().get("routing_file")
+    return Path(raw) if raw else lib.HERMES_HOME.joinpath("tkfamily_routing.json")
+
+
+def routing_load() -> dict:
+    try:
+        d = json.loads(routing_path().read_text())
+    except (OSError, ValueError):
+        d = {}
+    if not isinstance(d, dict):
+        d = {}
+    for kind in ROUTING_KINDS:
+        if not isinstance(d.get(kind), dict):
+            d[kind] = {}
+    if not isinstance(d.get("corrections"), list):
+        d["corrections"] = []
+    return d
+
+
+def routing_save(d: dict) -> None:
+    path = routing_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, indent=1, sort_keys=True))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def cmd_route(argv: list) -> int:
+    """jack tkfamily route [show | add <kind> <value> <folder path>]"""
+    folders = spec().get("folders") or {}
+    d = routing_load()
+    sub = argv[0] if argv else "show"
+
+    if sub == "add":
+        if len(argv) < 4:
+            print("usage: jack tkfamily route add <vendor|address|account> "
+                  "<value> <folder path>")
+            return 2
+        kind = argv[1].rstrip("s") + "s"
+        if kind not in ROUTING_KINDS:
+            print("kind must be one of: vendor, address, account")
+            return 2
+        value = argv[2].strip().lower()
+        dest = argv[3].strip()
+        if dest not in folders:
+            print("'%s' is not a folder in the table. Filing rules may only "
+                  "point at somewhere that exists." % dest)
+            print("Run `jack tkfamily route show` to see the legal paths.")
+            return 2
+        prev = d[kind].get(value)
+        d[kind][value] = dest
+        d["corrections"].append({"kind": kind, "value": value,
+                                 "from": prev, "to": dest,
+                                 "at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                     time.gmtime())})
+        routing_save(d)
+        if prev and prev != dest:
+            print("changed: %s %r  %s -> %s" % (kind[:-1], value, prev, dest))
+        else:
+            print("learned: %s %r -> %s" % (kind[:-1], value, dest))
+        print("Jack will file this one without asking from now on.")
+        return 0
+
+    if sub != "show":
+        print("usage: jack tkfamily route [show | add <kind> <value> <path>]")
+        return 2
+
+    total = sum(len(d[k]) for k in ROUTING_KINDS)
+    print("TK Family routing memory  (%s)" % routing_path())
+    print("%d rule(s), learned from %d correction(s)"
+          % (total, len(d["corrections"])))
+    print("")
+    if not total:
+        print("Empty, which is the honest starting state. Jack files by the")
+        print("five checks and ASKS whenever the category is clear but the")
+        print("exact folder is not. Every answer you give becomes a rule here")
+        print("and he stops asking about that one.")
+        print("")
+        print("You can also seed it directly, for example:")
+        print('  jack tkfamily route add vendor "rocky mountain power" '
+              '"2 Home/Utilities/Bills and Receipts"')
+        print('  jack tkfamily route add address "512 wasatch ridge drive" '
+              '"2 Home/Heber Home"')
+        return 0
+    for kind in ROUTING_KINDS:
+        if not d[kind]:
+            continue
+        print("%s (%d)" % (kind.upper(), len(d[kind])))
+        for value, dest in sorted(d[kind].items()):
+            print("    %-42s -> %s" % (value[:42], dest))
+        print("")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # audit
 # ---------------------------------------------------------------------------
 # Named after what it is for: answering "is this actually working" without
@@ -403,7 +517,10 @@ def cmd_audit() -> int:
 
 
 def main() -> int:
-    if "--audit" in sys.argv[1:]:
+    argv = sys.argv[1:]
+    if "--route" in argv:
+        return cmd_route(argv[argv.index("--route") + 1:])
+    if "--audit" in argv:
         return cmd_audit()
     status_only = "--status" in sys.argv[1:]
     cfg = spec()
