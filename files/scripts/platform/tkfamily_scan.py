@@ -23,9 +23,11 @@ What it watches:
 Two things stop this from becoming a wake-up storm.
 
   * Re-wake backoff. A document Jack failed to clear stays in the drop zone, and
-    without backoff it would wake him again sixty seconds later, forever. An
-    item is re-raised after RETRY_MINUTES, and after MAX_WAKES it is marked
-    STUCK and re-raised only every STUCK_MINUTES.
+    without backoff it would wake him again sixty seconds later, forever. It is
+    re-raised on the RETRY_SCHEDULE, which starts fast (a run that died is the
+    likeliest reason a document is still there five minutes on) and stretches
+    out (by the fifth try the document itself is the problem). After MAX_WAKES
+    it is marked STUCK and re-raised only every STUCK_MINUTES.
   * Failure backoff. If TK Family or Composio is down, the failure is counted,
     not announced. The agent is woken at the thresholds in FAIL_WAKE_AT so a
     real outage is reported once, not sixty times an hour.
@@ -63,9 +65,24 @@ import lib  # noqa: E402
 # the lifecycle guard would also read as an unsafe token (see the note above).
 STATE = lib.HERMES_HOME.joinpath("runtime", "tkfamily_scan.json")
 
-RETRY_MINUTES = 30      # re-raise an item still sitting there after this long
-MAX_WAKES = 5           # after this many wakes for one item, call it stuck
-STUCK_MINUTES = 360     # and re-raise it only every six hours
+# Re-raise schedule, in minutes, indexed by how many times an item has already
+# been raised. It backs off rather than using one flat interval, because the two
+# things it has to cover pull in opposite directions.
+#
+# The scan stamps an item as woken at SCAN time. It cannot know whether the
+# agent run that follows actually finished: a gateway restart, a crash or a
+# timeout kills the turn after the stamp is written, and the document then sits
+# untouched for the whole interval. That happened for real on 2026-08-09, when a
+# deploy restart landed on run 088e251b and a document waited with nothing
+# wrong with it.
+#
+# So the FIRST retry is fast, because the overwhelmingly likely reason a
+# document is still there five minutes later is that the run died. Later
+# retries stretch out, because by then the likely reason is that the document
+# itself is a problem, and hammering it wastes model runs.
+RETRY_SCHEDULE = (5, 15, 30, 60)
+MAX_WAKES = len(RETRY_SCHEDULE) + 1   # after this, call it stuck
+STUCK_MINUTES = 360                   # and re-raise only every six hours
 FAIL_WAKE_AT = (15, 60, 240)   # consecutive-failure counts that earn a wake
 HTTP_TIMEOUT = 45
 BATCH = 20             # folders per COMPOSIO_MULTI_EXECUTE_TOOL call (its cap is 50)
@@ -577,7 +594,10 @@ def main() -> int:
             continue
         wakes = int(rec.get("wakes") or 1)
         age_sec = now - int(rec.get("last_woken") or now)
-        limit = STUCK_MINUTES if wakes >= MAX_WAKES else RETRY_MINUTES
+        if wakes >= MAX_WAKES:
+            limit = STUCK_MINUTES
+        else:
+            limit = RETRY_SCHEDULE[min(wakes - 1, len(RETRY_SCHEDULE) - 1)]
         if age_sec >= limit * 60:
             rec["last_woken"] = now
             rec["wakes"] = wakes + 1
@@ -634,8 +654,9 @@ def main() -> int:
             print(line(key, item))
         print("")
     if retry:
-        print("Still here after %d minutes, so the last attempt did not clear them:"
-              % RETRY_MINUTES)
+        print("Still here, so the last attempt did not clear them. The most "
+               "likely reason for a fast retry is that the run died partway "
+               "rather than anything being wrong with the document:")
         for key, item in retry:
             print(line(key, item))
         print("")
