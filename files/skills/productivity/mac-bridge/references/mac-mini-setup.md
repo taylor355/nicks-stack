@@ -85,17 +85,21 @@ whoami
 
 ---
 
-## Step 3 — Ollama, reachable from the VM
+## Step 3 — Ollama
 
-You already have Ollama. By default it only listens to the Mac itself, so
-open it to the Tailscale network:
+**Done, and solved a different way than this originally said.**
 
-```bash
-launchctl setenv OLLAMA_HOST 0.0.0.0
-```
+`launchctl setenv OLLAMA_HOST` did not take — `lsof` showed Ollama still bound
+to 127.0.0.1 after a restart, because `launchctl setenv` lands in the GUI
+session and the app did not pick it up. Rather than fight that, the daemon was
+LEFT on loopback and the VM forwards a port to it over the ssh link it already
+has (supervisor keeps `mac-ollama-tunnel` alive).
 
-Then quit Ollama from the menu bar and reopen it. That setting does not
-survive a reboot on its own, so make it stick:
+That is strictly more private than the original instruction: Ollama never
+becomes reachable on the network at all. Measured live: qwen3:8b answered in
+18.7s cold at 23 tok/s.
+
+If you ever do want it on the network directly, the original approach was:
 
 ```bash
 mkdir -p ~/Library/LaunchAgents && cat > ~/Library/LaunchAgents/com.jack.ollamahost.plist <<'PLIST'
