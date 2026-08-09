@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.26"
+readonly SCRIPT_VERSION="1.1.27"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -1154,6 +1154,40 @@ if [[ -n "$TK_JOB" ]]; then
   else
     warn "cron job '$TK_JOB' is not registered — captured documents will never be read"
   fi
+fi
+
+# ==========================================================================
+section "8d. Agent memory headroom"
+# ==========================================================================
+# memory.memory_char_limit is enforced by TRUNCATION, with no error, no warning
+# and no log line. A MEMORY.md over the cap does not fail; it quietly stops
+# holding the oldest things Jack learned, and the first symptom is him not
+# knowing something he was told last month. Found at 86% on 2026-08-09 because
+# the people roster had been duplicated out of SOUL.md. That is the usual
+# cause: it fills with reference material, not with live state.
+MEMCHK="$HERMES_HOME/scripts/platform/memory_check.py"
+if [[ -f "$MEMCHK" ]]; then
+  MEM_JSON="$(python3 "$MEMCHK" --json 2>/dev/null || true)"
+  if [[ -z "$MEM_JSON" ]]; then
+    warn "memory headroom could not be evaluated"
+  else
+    while IFS='|' read -r LBL CHARS LIMIT PCT; do
+      [[ -n "$LBL" ]] || continue
+      if (( $(printf '%.0f' "$PCT") >= 95 )); then
+        fail "$LBL is at ${PCT}% of its ${LIMIT} char cap ($CHARS) — Hermes truncates silently; prune to live state and move depth to Notion"
+      elif (( $(printf '%.0f' "$PCT") >= 80 )); then
+        warn "$LBL is at ${PCT}% of its ${LIMIT} char cap ($CHARS) — nothing lost yet, but it fills with reference material that belongs in Notion"
+      else
+        pass "$LBL at ${PCT}% of its ${LIMIT} char cap ($CHARS chars)"
+      fi
+    done < <(printf '%s' "$MEM_JSON" | python3 -c "
+import json,sys
+for e in json.load(sys.stdin).get('entries',[]):
+    if e.get('exists'):
+        print('|'.join([e['label'], str(e['chars']), str(e['limit']), '%.0f' % (e['pct']*100)]))" 2>/dev/null)
+  fi
+else
+  warn "memory_check.py not installed — nothing watches the silent truncation cap"
 fi
 
 # ==========================================================================

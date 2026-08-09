@@ -16,10 +16,29 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.26
+version: 1.1.27
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.27 closes the document loop and stops the memory cap degrading silently.
+  The TK Family developer shipped create_document_from_drive_file, so a scan
+  dropped into Drive now becomes a review card like an in-app capture. Jack was
+  already primed to look for it, and the first live run through the new path
+  produced a real card: Mountain View Orthodontics, 2,850 due September 5,
+  status needs_review, source drive, with the Drive link and the filed path on
+  it. The app-capture path proved itself the same night on two real documents
+  that arrived by email, read and proposed rather than created. One gotcha
+  surfaced and is worth remembering: keepalive_interval 3600 means the MCP
+  session almost never reconnects, and the tool list only refreshes on connect,
+  so a newly shipped tool is invisible until the gateway restarts. That is the
+  cost of the v1.1.24 fix and it is the right trade, but it needs a restart when
+  the developer ships. Household tasks join the morning brief, filtered to ones
+  ASSIGNED to Taylor: the Covey list is mostly McKell's and he was explicit that
+  unmanaged items must not spam him, so unassigned is not his. MEMORY.md was at
+  86% of a cap Hermes enforces by silent truncation, entirely because the people
+  roster had been duplicated out of SOUL.md. It is back to live state only at
+  74%, `jack memory` shows the headroom, verify warns at 80% and fails at 95%,
+  and SOUL.md now tells Jack to check before he writes.
   v1.1.26 is about what Taylor actually sees. He was getting an operator's
   console where he wanted a text message: a "Cronjob Response" header, a 12
   character job id he will never remember, a "to stop or manage this job" footer,
@@ -457,10 +476,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.26
-  bootstrap: 1.1.26
-  update: 1.1.26
-  verify: 1.1.26
+  platform: 1.1.27
+  bootstrap: 1.1.27
+  update: 1.1.27
+  verify: 1.1.27
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2

@@ -102,6 +102,11 @@ jack — Taylor AI Platform
         what the tk-family-docs cron job runs every minute: it emits the wake
         gate, so run it by hand only when debugging.
 
+  jack memory
+        How close MEMORY.md and the user profile are to the caps that TRUNCATE
+        them silently. Live state belongs there; depth belongs in the Notion
+        hub. Checked by verify.sh too.
+
   jack gateway restart [--timeout N] [--force]
         Restart the gateway WITHOUT texting Taylor a "gateway shutting down,
         your task will be interrupted" warning. Waits for in-flight scheduled
@@ -255,6 +260,11 @@ PROFILES
     [[ $# -gt 0 ]] && shift || true
     [[ "$sub" == "prune" ]] && sub="apply"
     exec python3 "$PRUNE" "$sub" "$@"
+    ;;
+  memory|mem)
+    MEMCHK="${PLATFORM_SCRIPTS}/memory_check.py"
+    [[ -f "$MEMCHK" ]] || die "memory_check.py not installed — redeploy with platform/bootstrap.sh"
+    exec python3 "$MEMCHK" "$@"
     ;;
   gateway|gw)
     GWR="${PLATFORM_SCRIPTS}/gw_restart.py"

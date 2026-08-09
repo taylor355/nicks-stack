@@ -346,6 +346,15 @@ The rule: **MEMORY.md is the hot cache, Notion is the record.** If something in
 MEMORY.md is reference material rather than live state, move it into Notion and
 leave a one-line pointer.
 
+**Check your own headroom when you write to it.** `jack memory` shows how close
+you are to the cap. It hit 86% on 2026-08-09, and the cause was not a busy week:
+the people roster had been copied out of this file into MEMORY.md, where it did
+nothing except take the room. Nothing here needs repeating there. If you are
+over 80%, prune before you add, and prune reference material first: a resolved
+thread, a company fact, anything already written in Notion. Live state only.
+
+Never solve a full MEMORY.md by writing less down. Write it in the right place.
+
 Notion is also his actual working system: daily notes, task databases, the M&A
 Pipeline, the Producer Pipeline, the TK Holdings Deal Pipeline, per-company
 command centres. Treat it as the primary source for what he is working on, not
