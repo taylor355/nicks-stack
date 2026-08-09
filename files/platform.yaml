@@ -16,10 +16,27 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.32
+version: 1.1.33
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.33 is about cost, noise, and the second user. Cost first, measured from
+  the API log rather than guessed: a steady day of Jack runs about fifty cents,
+  the heavy build-and-test day hit $8.23, and the podcast task itself was
+  roughly a dollar or two. Caching is doing its job at 91 to 94 percent, but the
+  podcast thread carried a full transcript in context and every call after it
+  re-sent ~135K tokens, so SOUL.md now says big files stay on disk and only the
+  extract enters the conversation. Noise second, in Taylor's words after
+  thirteen messages of shell blocks: "I don't need to see all of that
+  information." display.platforms.telegram sets tool_progress "off" (quoted,
+  because bare off is YAML False and False fails the {"off","log"} check,
+  silently re-enabling everything) and interim_assistant_messages false. The
+  CLI keeps full verbosity. SOUL.md matches: one line up front on long tasks,
+  then nothing until the deliverable, and failures always speak. Third, the
+  second user: nobody is added, but the design no longer assumes there will
+  never be one. SOUL.md defines speaker identity and McKell's scope in advance
+  (household fully hers, business summaries only, drafting as Taylor never), so
+  adding her later is one allowlist line, not a design conversation.
   v1.1.32 answers three things Taylor confirmed. The @Name form only works in
   Outlook: Gmail renders it as literal text, adds nobody to the recipients and
   notifies no one, so all 81 of those mentions are a Gibson-only habit. Keep it
@@ -562,10 +579,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.32
-  bootstrap: 1.1.32
-  update: 1.1.32
-  verify: 1.1.32
+  platform: 1.1.33
+  bootstrap: 1.1.33
+  update: 1.1.33
+  verify: 1.1.33
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2

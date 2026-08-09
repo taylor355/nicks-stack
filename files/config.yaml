@@ -230,6 +230,21 @@ display:
   long_running_notifications: true
   busy_ack_detail: true
   background_process_notifications: all
+  # Per-platform quiet mode (v1.1.33). Taylor's words after the podcast task
+  # produced 13+ messages of Shell blocks and play-by-play: "I don't need to
+  # see all of that information. I know that Jack is working, and he'll give
+  # me the output when he has it."
+  #
+  # So on TELEGRAM ONLY: no tool-progress bubbles ("off" is QUOTED, because
+  # bare off is YAML for False, and False is not in the {"off","log"} check,
+  # which would silently re-enable everything), and no interim assistant
+  # messages between tool calls. The CLI keeps full verbosity for debugging.
+  # Long-running notifications stay on so a genuinely stuck task still
+  # surfaces rather than dying silently.
+  platforms:
+    telegram:
+      tool_progress: "off"
+      interim_assistant_messages: false
 stt:
   enabled: true
   local:
