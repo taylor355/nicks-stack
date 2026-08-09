@@ -1243,7 +1243,7 @@ if [[ "$MAC_ON" == "yes" ]]; then
     warn "mac_bridge is enabled but this VM is not on the tailnet — run: tailscale up"
   fi
 elif [[ "$MAC_ON" == "no" ]]; then
-  info "mac_bridge is off — the Mac-side install has not been done yet"
+  note "mac_bridge is off — the Mac-side install has not been done yet"
 else
   warn "mac_bridge configuration could not be read from platform.yaml"
 fi

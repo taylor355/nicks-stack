@@ -548,6 +548,32 @@ else
   warn "$PREFIX_BIN/nicks-stack-op-enable missing — cannot re-enable the 1Password map"
 fi
 
+# Composio's MCP entry is spliced into config.yaml between sentinels at RUN
+# TIME, so re-placing config.yaml from the repo empties that region — the repo
+# copy has never held a session url and must not. Left alone, the next gateway
+# restart comes up with no Composio server at all, which means no Gmail, no
+# Calendar, no Drive and no Notion, silently. `init` RESUMES the persisted
+# session rather than minting a new one, so connected accounts survive.
+#
+# Found the hard way on 2026-08-09: a hand-installed config.yaml emptied the
+# region and verify.sh caught it as "STALE composio runtime". The running
+# gateway was unaffected — it had already loaded its MCP servers — which is
+# exactly why this is worth automating: the damage is invisible until a
+# restart, and by then the cause is hours behind you.
+if [[ -x "$PREFIX_BIN/nicks-stack-composio-session" ]]; then
+  if [[ -f "$HERMES_HOME/composio/session.json" ]]; then
+    if "$PREFIX_BIN/nicks-stack-composio-session" init >/dev/null 2>&1; then
+      ok "Composio session resumed and re-spliced into config.yaml"
+    else
+      warn "could not resume the Composio session — Google and Notion will be missing after restart; run: nicks-stack-composio-session init"
+    fi
+  else
+    log "no persisted Composio session — nothing to re-splice"
+  fi
+else
+  warn "$PREFIX_BIN/nicks-stack-composio-session missing — cannot re-splice the Composio MCP entry"
+fi
+
 if ((DO_RESTART)); then
   if have supervisorctl && supervisorctl status >/dev/null 2>&1; then
     supervisorctl reread >/dev/null 2>&1 || warn "supervisorctl reread reported an error"
