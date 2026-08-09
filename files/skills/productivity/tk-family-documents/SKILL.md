@@ -69,6 +69,22 @@ the last verified value. If a Drive call fails with an account error, run
 `jack composio accounts` and use the current googledrive id for
 taylor@tk-holdings.com. Do not tell Taylor to reconnect anything.
 
+## A Drive file with no app document
+
+`record_document_reading` needs a `document_id`, and TK Family has no tool that
+turns a raw Drive file into a document record. So a file that arrives only in
+Drive cannot be written back to the app.
+
+Before you assume that is the case, call `search_documents` for the vendor or
+the file name: an app capture and its Scanner Pro upload are the same document
+seen twice, and pairing them is the whole point.
+
+If there really is no matching document, still read it, still rename it, and
+still file it. Emptying the drop zone is the job. Skip
+`record_document_reading` and `mark_document_filed`, and say in your reply to
+Taylor that the file was filed but has no card in the app. Do not invent a
+document id and do not leave the file sitting there.
+
 ## The loop
 
 The cron job runs the scan for you. When it wakes you it has already told you
@@ -117,6 +133,9 @@ Rules for the name, all of which matter:
   twelve of those and four properties.
 - **No dollar amounts in the filename.** The amount lives in the app, next to
   the due date, where it can be sorted and reminded on.
+- **Keep the file's real extension.** The pattern is written with `.pdf`
+  because most scans are PDFs, but a JPEG stays `.jpg`. Renaming a JPEG to
+  `.pdf` gives Taylor a file his viewer refuses to open.
 
 Month-day-year does not sort chronologically by filename. That is a deliberate
 tradeoff Taylor chose for readability. Sort these folders by Drive's
