@@ -173,9 +173,18 @@ modes:
     #   host: mac-mini
     # platform.yaml -> mac_bridge is the single place that name is configured;
     # `python3 mac_bridge.py models` reports what the Mac can actually run.
-    host: null
-    port: 11434
-    fallback_when_host_down: null   # never silently reroute free work to a paid tier
+    # LIVE as of v1.1.34, measured not assumed: qwen3:8b on Taylor's Mac mini
+    # answered a real prompt through this address in 18.7s cold, 23 tok/s.
+    #
+    # 127.0.0.1 is not a typo. Ollama on the Mac listens on loopback only, and
+    # that was left alone deliberately — a supervised ssh tunnel
+    # (mac-ollama-tunnel) forwards this port to it, which is strictly more
+    # private than binding the daemon to the network and needs nothing clicked
+    # on the Mac. If the tunnel is down this fails to connect, which is the
+    # correct behaviour: never silently reroute free work to a paid tier.
+    host: 127.0.0.1
+    port: 11435
+    fallback_when_host_down: null
     summary: Local Ollama — private, free, no data leaves machines Taylor owns.
     why: >-
       Routes to an Ollama daemon. The model is whichever one is pulled there

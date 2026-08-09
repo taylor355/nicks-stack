@@ -1103,6 +1103,18 @@ mac_bridge:
 
   ollama:
     port: 11434
+    # Reached through the supervised ssh tunnel, not the tailnet address.
+    # Ollama on the Mac stays bound to loopback: more private, and nothing to
+    # click. supervisor keeps `mac-ollama-tunnel` alive.
+    url: http://127.0.0.1:11435
+
+  # Builds are ENQUEUED as files and executed by a LaunchAgent in the Mac's GUI
+  # login session. Not a preference: macOS refuses Keychain access to an ssh
+  # session, so `claude -p` over ssh cannot read its own subscription token and
+  # reports "Not logged in" while the user is signed in. The GUI session can.
+  build_mode: queue
+  queue_dir: $HOME/JackBuilds/queue
+  runs_dir: $HOME/JackBuilds
 
   claude_code:
     binary: claude

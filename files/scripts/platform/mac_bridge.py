@@ -148,6 +148,10 @@ DEFAULTS = {
     "http_proxy": DEFAULT_HTTP_PROXY,
     "workspace": "~/JackBuilds",
     "ollama_port": 11434,
+    "ollama_url": "http://127.0.0.1:11435",
+    "build_mode": "queue",
+    "queue_dir": "$HOME/JackBuilds/queue",
+    "runs_dir": "$HOME/JackBuilds",
     "claude_binary": "claude",
     "codex_binary": "codex",
     "max_turns": 40,
@@ -193,6 +197,10 @@ def config() -> dict:
                        else raw.get("http_proxy")),
         "workspace": shell_path(raw.get("workspace") or DEFAULTS["workspace"]),
         "ollama_port": int(ol.get("port") or DEFAULTS["ollama_port"]),
+        "ollama_url": ol.get("url") or DEFAULTS["ollama_url"],
+        "build_mode": raw.get("build_mode") or DEFAULTS["build_mode"],
+        "queue_dir": shell_path(raw.get("queue_dir") or DEFAULTS["queue_dir"]),
+        "runs_dir": shell_path(raw.get("runs_dir") or DEFAULTS["runs_dir"]),
         "claude_binary": cc.get("binary") or DEFAULTS["claude_binary"],
         "codex_binary": (raw.get("codex") or {}).get("binary") or DEFAULTS["codex_binary"],
         "max_turns": int(cc.get("max_turns") or DEFAULTS["max_turns"]),
@@ -274,6 +282,70 @@ def remote_script(body: str) -> str:
             f'bash "$f" < /dev/null; rc=$?; rm -f "$f"; exit $rc')
 
 
+
+# --------------------------------------------------------------------------
+# The queue — how work reaches the GUI login session
+# --------------------------------------------------------------------------
+# ssh CANNOT run Claude Code. Not "is awkward at": macOS refuses Keychain
+# access to an ssh session outright —
+#
+#   security: SecKeychainCopySettings login.keychain-db:
+#             User interaction is not allowed.
+#
+# so `claude -p` over ssh cannot read its own subscription token and reports
+# "Not logged in" while the user is, in fact, logged in. That is macOS policy.
+# No ssh flag, no PATH fix and no amount of retrying changes it.
+#
+# A LaunchAgent does change it. jack-build-runner.sh is bootstrapped into the
+# Aqua (GUI) domain, where the Keychain is unlocked and every tool behaves as
+# it does in Terminal. So work is ENQUEUED as a file over ssh and executed by
+# that agent. The queue is a directory: nothing listens on a port, and the
+# only way to enqueue is to already hold ssh access to the account.
+#
+# Codex does not need this — it keeps its auth in a plain file and runs fine
+# over ssh — but it goes through the same path anyway, because one code path
+# that always works beats two that work under different conditions.
+def enqueue(cfg: dict, specialist: str, task: str, run_id: str) -> tuple[bool, str]:
+    """Drop a task file into the Mac's queue. First line is the specialist,
+    everything after is the brief verbatim — deliberately not JSON, so a brief
+    full of quotes and newlines cannot be mis-parsed on the way in."""
+    payload = base64.b64encode(f"{specialist}\n{task}".encode()).decode()
+    body = (f'mkdir -p "{cfg["queue_dir"]}"\n'
+            f'echo {payload} | base64 -d > "{cfg["queue_dir"]}/{run_id}.task.tmp"\n'
+            f'mv "{cfg["queue_dir"]}/{run_id}.task.tmp" '
+            f'"{cfg["queue_dir"]}/{run_id}.task"\n'
+            f'echo queued\n')
+    rc, out, err = ssh(cfg, remote_script(body), timeout=45)
+    if rc != 0 or "queued" not in out:
+        return False, (err or out or f"ssh exited {rc}").strip()[:200]
+    return True, ""
+
+
+def await_run(cfg: dict, run_id: str, timeout: int) -> dict:
+    """Poll for the runner's DONE marker. The runner writes it atomically and
+    LAST, so its presence means the artifacts it lists are complete on disk."""
+    run_dir = f'{cfg["runs_dir"]}/{run_id}'
+    deadline = time.time() + timeout
+    poll = (f'if [ -f "{run_dir}/DONE" ]; then cat "{run_dir}/DONE"; '
+            f'echo "---LOG---"; tail -40 "{run_dir}/RESULT.log" 2>/dev/null; '
+            f'else echo PENDING; fi')
+    while time.time() < deadline:
+        rc, out, _ = ssh(cfg, remote_script(poll), timeout=45)
+        if rc == 0 and "PENDING" not in out:
+            done, _, log = out.partition("---LOG---")
+            exit_code, artifacts = 1, []
+            head, _, art_block = done.partition("---ARTIFACTS---")
+            for line in head.splitlines():
+                if line.strip().startswith("exit="):
+                    exit_code = int(line.strip().split("=", 1)[1] or 1)
+            artifacts = [a.strip() for a in art_block.splitlines() if a.strip()]
+            return {"pending": False, "exit_code": exit_code,
+                    "artifacts": artifacts, "log": log.strip(), "run_dir": run_dir}
+        time.sleep(5)
+    return {"pending": True, "exit_code": 124, "artifacts": [],
+            "log": f"no result after {timeout}s", "run_dir": run_dir}
+
+
 # --------------------------------------------------------------------------
 # Health checks — each one is a real call, never a status readout
 # --------------------------------------------------------------------------
@@ -293,11 +365,16 @@ def check_reachable(cfg: dict) -> dict:
 
 
 def check_ollama(cfg: dict) -> dict:
-    url = f"http://{cfg['host']}:{cfg['ollama_port']}/api/tags"
-    status, body, err = proxied_json(cfg, url, timeout=10)
+    # Through the SUPERVISED SSH TUNNEL, not the tailnet address. Ollama on the
+    # Mac listens on 127.0.0.1 only, and that was left alone on purpose: a
+    # forwarded port is strictly more private than binding the daemon to the
+    # network, and it needs nothing clicked on the Mac. supervisor keeps the
+    # tunnel up; if it drops, this check fails honestly instead of hanging.
+    url = cfg["ollama_url"].rstrip("/") + "/api/tags"
+    status, body, err = lib.http_json(url, timeout=10)
     if status != 200 or not isinstance(body, dict):
         return {"ok": False, "detail": lib.scrub(err or f"HTTP {status}")[:160],
-                "hint": "on the Mac: launchctl setenv OLLAMA_HOST 0.0.0.0 then restart Ollama"}
+                "hint": "check the tunnel: supervisorctl status mac-ollama-tunnel"}
     models = [m.get("name", "") for m in body.get("models") or []]
     chat = [m for m in models if lib.is_chat_model(m)]
     if not chat:
@@ -309,6 +386,8 @@ def check_ollama(cfg: dict) -> dict:
 
 def check_specialist(cfg: dict, which: str) -> dict:
     """A real one-turn prompt. A version string proves installation, not login."""
+    if cfg.get("build_mode") == "queue":
+        return check_specialist_queued(cfg, which)
     binary = cfg["claude_binary"] if which == "claude-code" else cfg["codex_binary"]
     if which == "claude-code":
         probe = (f'{binary} -p "Reply with exactly: BRIDGE-OK" '
@@ -337,6 +416,34 @@ def check_specialist(cfg: dict, which: str) -> dict:
         return {"ok": False, "detail": "installed and logged in, but the plan limit is hit",
                 "hint": "use the backup specialist until it resets"}
     return {"ok": False, "detail": (blob.strip().splitlines() or ["no response"])[-1][:160]}
+
+
+def check_specialist_queued(cfg: dict, which: str) -> dict:
+    """Same live prompt, routed through the GUI-session runner — the only place
+    Claude Code can read its Keychain credential."""
+    run_id = f"probe-{which}-{int(time.time())}"
+    ok, err = enqueue(cfg, which, "Reply with exactly: BRIDGE-OK", run_id)
+    if not ok:
+        return {"ok": False, "detail": f"could not reach the queue: {err}",
+                "hint": "is the Mac awake and is Remote Login still on?"}
+    res = await_run(cfg, run_id, timeout=150)
+    blob = res["log"]
+    if res["pending"]:
+        return {"ok": False, "detail": "the build runner did not pick the task up",
+                "hint": "on the Mac: launchctl print gui/$(id -u)/com.jack.buildrunner"}
+    if "BRIDGE-OK" in blob:
+        return {"ok": True, "detail": "authenticated (answered a live prompt)"}
+    lowered = blob.lower()
+    if "expired" in lowered:
+        return {"ok": False, "detail": "signed in, but the session expired",
+                "hint": "on the Mac: run `claude`, then /login"}
+    if "not logged in" in lowered or "/login" in lowered:
+        return {"ok": False, "detail": "installed but not signed in",
+                "hint": "on the Mac: run `claude`, then /login"}
+    if "limit" in lowered or "quota" in lowered:
+        return {"ok": False, "detail": "signed in, but the plan limit is hit",
+                "hint": "use the backup specialist until it resets"}
+    return {"ok": False, "detail": (blob.splitlines() or ["no response"])[-1][:160]}
 
 
 def bb_base(cfg: dict) -> str:
@@ -545,6 +652,34 @@ def cmd_build(args) -> int:
         if health.get("hint"):
             print(f"-> {health['hint']}", file=sys.stderr)
         return 2
+
+    if cfg.get("build_mode") == "queue":
+        ok, err = enqueue(cfg, specialist, task, run_id)
+        if not ok:
+            print(f"could not enqueue the build: {err}", file=sys.stderr)
+            return 2
+        res = await_run(cfg, run_id, timeout=cfg["build_timeout"])
+        rc, out, err = res["exit_code"], "", ""
+        artifacts, run_dir, log = res["artifacts"], res["run_dir"], res["log"]
+        result = {
+            "specialist": specialist, "run_id": run_id, "run_dir": run_dir,
+            "artifacts": artifacts, "exit_code": rc,
+            "log_tail": log[-2000:], "stderr": "",
+        }
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"{specialist} finished in {run_dir} (exit {rc})")
+            if artifacts:
+                print("Artifacts:")
+                for a in artifacts:
+                    print(f"  {a}")
+            else:
+                print("No files were produced.")
+            if log:
+                print("\n--- last output ---")
+                print(log[-1500:])
+        return 0 if rc == 0 else 2
 
     rc, out, err = ssh(cfg, remote_script(body), timeout=cfg["build_timeout"])
     artifacts, run_dir, log = [], "", out
