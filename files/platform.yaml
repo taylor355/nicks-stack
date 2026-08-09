@@ -16,10 +16,31 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.29
+version: 1.1.30
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.30 makes drafting in Taylor's name real work rather than guesswork. Nine
+  sent emails arrived and were analysed: five Gibson, two on the Anderson Tax
+  acquisition, one to the family selling the practice, one two-line internal
+  ask. The taylor-email-voice skill carries what they show. His greetings (Hi
+  First, comma, Hey for his own team, none at all for a one-line ask), his
+  closers (Thanks! default, Thanks, when attaching, never Best or Regards), the
+  five-beat shape of his emails, and how register moves between his team, the
+  parent company and a deal without the voice changing. Six habits are quoted
+  from the source: he owns a miss in the first line and calls it "my miss", he
+  loops people in by saying what they do, he gives them a named ask on its own
+  line, he offers his window and lets the other person pick inside it, he leads
+  with the uncomfortable number, and he reaches for the specific detail that
+  proves he was listening. The em dash rule stops being an assertion and becomes
+  a measurement: zero across nine emails. Because Jack is not connected to Gibson
+  and will not be, the skill is explicit that the Gibson signature block never
+  goes on a draft. Tested live on an invented Anderson counter-offer, and the
+  first draft was close enough to correct rather than rewrite: it refused to
+  commit a date or a number, caught an OOO conflict, and stated its assumptions.
+  Two corrections went back in. It closed passively where he moves first, and it
+  said "your calendar shows" about something it had read in MEMORY.md, which was
+  right this time and will be stale eventually.
   v1.1.29 stops a late bill from producing a task dated in the past, and stops
   proposals from sitting unseen. The runway rule was "three days before the due
   date", which for a bill that already slipped puts the task behind today and
@@ -509,10 +530,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.29
-  bootstrap: 1.1.29
-  update: 1.1.29
-  verify: 1.1.29
+  platform: 1.1.30
+  bootstrap: 1.1.30
+  update: 1.1.30
+  verify: 1.1.30
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
