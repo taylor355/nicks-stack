@@ -16,10 +16,28 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.30
+version: 1.1.31
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.31 replaces the nine sample voice analysis with Taylor's own profile,
+  measured by Microsoft Copilot across 2,000 sent emails. It is strictly better
+  data and it is kept close to verbatim because he wrote it and likes it: median
+  31 words, median sentence 8 words, half of all messages with no greeting at
+  all, Thanks! 191 times against Best or Regards never, a four step disagreement
+  pattern, a four beat thank you, and a vocabulary list on both sides. Three
+  things this deployment adds because the profile cannot know them. Jack is not
+  connected to Gibson mail and never will be, so the Gibson signature block must
+  never land on a draft and a Gibson thread is drafted for Taylor to send from
+  Outlook. A per company map of WHO sits in which register row, which is the
+  only thing he wanted to vary business by business: Gibson leadership and
+  Unison, the Gibson bench, Anderson with Nicole as a peer principal, Outlaw
+  where Paige and Will are friends as well as colleagues, SIGNL where Andrew is
+  his brother. And the two corrections a live test produced. Tested again on a
+  disagreement and a scheduling reply. The disagreement was near perfect, hitting
+  all four steps unprompted. The scheduling reply was the important failure: it
+  accepted a meeting time on his behalf without looking at a calendar, short and
+  in voice and completely wrong. That is now a named guardrail with a procedure.
   v1.1.30 makes drafting in Taylor's name real work rather than guesswork. Nine
   sent emails arrived and were analysed: five Gibson, two on the Anderson Tax
   acquisition, one to the family selling the practice, one two-line internal
@@ -530,10 +548,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.30
-  bootstrap: 1.1.30
-  update: 1.1.30
-  verify: 1.1.30
+  platform: 1.1.31
+  bootstrap: 1.1.31
+  update: 1.1.31
+  verify: 1.1.31
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
