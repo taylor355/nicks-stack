@@ -742,6 +742,77 @@ def cmd_fetch(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# watch — the difference between "works today" and "keeps working"
+# --------------------------------------------------------------------------
+# Taylor's ask was that iMessage be bulletproof, because he intends to redirect
+# real notifications onto it. The failure that matters is not a loud one. It is
+# the Mac going to sleep, BlueBubbles quitting after an update, Messages
+# signing itself out, or the Tailscale key expiring — after which Jack keeps
+# "sending" texts that never arrive, and Taylor finds out by missing something.
+#
+# So this runs on a schedule and compares each lane against the last run.
+# It speaks ONLY on a state change:
+#
+#   working -> broken   say so, once, with the specific reason
+#   broken  -> working  say so, once, so silence is never ambiguous
+#   unchanged           say nothing at all
+#
+# The last line of stdout is the Hermes cron wake gate. {"wakeAgent": false}
+# skips the LLM run entirely, so a healthy day costs nothing: no tokens, no
+# Telegram message, no noise. That is what makes a frequent check affordable.
+#
+# LIFECYCLE-GUARD NOTE (same trap as tkfamily_scan.py): the cron lifecycle
+# guard tokenises this job's command and fails closed on any path-like token
+# that is not a regular file. Keep bare "/" and directory literals out of the
+# scheduled command string.
+def cmd_watch(args) -> int:
+    cfg = config()
+    blocked = not_configured(cfg)
+    if blocked:
+        print(json.dumps({"wakeAgent": False}))
+        return 0
+
+    checks = {"reachable": check_reachable(cfg)}
+    if checks["reachable"]["ok"]:
+        checks["imessage"] = check_bluebubbles(cfg)
+        if not args.imessage_only:
+            checks["ollama"] = check_ollama(cfg)
+            checks["claude-code"] = check_specialist(cfg, "claude-code")
+
+    state = load_state()
+    previous = state.get("watch") or {}
+    changes = []
+    now = {}
+    for name, res in checks.items():
+        now[name] = bool(res["ok"])
+        was = previous.get(name)
+        if was is None:
+            continue                      # first sighting is not a change
+        if was and not res["ok"]:
+            changes.append(f"{name} stopped working: {res['detail']}")
+        elif not was and res["ok"]:
+            changes.append(f"{name} is working again")
+    state["watch"] = now
+    state["watch_checked_at"] = int(time.time())
+    save_state(state)
+
+    if not changes:
+        # Nothing to say. The wake gate keeps this free.
+        print(json.dumps({"wakeAgent": False}))
+        return 0
+
+    print("MAC BRIDGE STATE CHANGE")
+    for line in changes:
+        print(f"- {line}")
+    print(json.dumps({
+        "wakeAgent": True,
+        "reason": "mac-bridge lane changed state",
+        "changes": changes,
+    }))
+    return 0
+
+
+# --------------------------------------------------------------------------
 # join — bring this VM onto Taylor's tailnet without anyone handling the key
 # --------------------------------------------------------------------------
 def cmd_join(args) -> int:
@@ -791,6 +862,10 @@ def cmd_join(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Bridge from this VM to Taylor's Mac mini")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("watch", help="scheduled health check; speaks only on a state change")
+    p.add_argument("--imessage-only", action="store_true")
+    p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("join", help="bring this VM onto Taylor's tailnet (one time)")
     p.add_argument("--hostname", default="jack-55-vm")
