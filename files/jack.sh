@@ -94,11 +94,13 @@ jack — Taylor AI Platform
         Live Composio session state: API key, session validity, user, MCP URL,
         header type, scoped toolkits, last verification. Never prints secrets.
 
-  jack tkfamily [status|scan]
+  jack tkfamily [status|audit|scan]
         TK Family document processing. status shows the app queue depth, the
-        three Drive drop zones and anything stuck. scan is what the
-        tk-family-docs cron job runs every minute: it emits the wake gate, so
-        run it by hand only when debugging.
+        three Drive drop zones and anything stuck. audit walks all 45 folders
+        and reports what is off: documents still sitting in an inbox, files
+        filed without being renamed, and the same name in two places. scan is
+        what the tk-family-docs cron job runs every minute: it emits the wake
+        gate, so run it by hand only when debugging.
 
   jack composio connect [toolkit] [--count N]
         Mint OAuth link(s) to connect an account. Composio caps every link at
@@ -248,8 +250,9 @@ PROFILES
     [[ $# -gt 0 ]] && shift || true
     case "$sub" in
       status) exec python3 "$TKSCAN" --status "$@" ;;
+      audit)  exec python3 "$TKSCAN" --audit "$@" ;;
       scan)   exec python3 "$TKSCAN" "$@" ;;
-      *)      die "usage: jack tkfamily [status|scan]" ;;
+      *)      die "usage: jack tkfamily [status|audit|scan]" ;;
     esac
     ;;
   manifest)

@@ -16,10 +16,29 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.23
+version: 1.1.24
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.24 gives Jack the whole tool surface back and moves the safety somewhere
+  it belongs. v1.1.23b had withheld fifteen of TK Family's twenty-three tools so
+  that "propose, never create" could not be broken by accident. Taylor asked for
+  the opposite trade, and he is right about which risk is bigger: a Jack who
+  cannot move a file is useless every day, while a Jack who occasionally creates
+  something unnecessary is annoying once, visibly, and undoably. So the boundary
+  is redrawn around PROVENANCE rather than capability. He may rename, move,
+  upload, create and update, and every one of those has to trace back to a
+  document a person actually captured. Five guards carry it, declared in
+  tk_family.write_authority and taught in the skill: never author a document,
+  search before creating, read the file back after writing (Drive answers 200 to
+  a rename that changed nothing), quote figures off the page rather than
+  inferring them, and stop below 0.6 confidence. Two operations stay denied
+  because they are hard to undo rather than because they are distrusted:
+  changing sharing or permissions, and permanent deletion. Taylor's own rule
+  against creating folders stays too. New: `jack tkfamily audit` walks all
+  forty-five folders and reports documents still sitting in an inbox, files
+  filed without being renamed, and the same name in two places, which are the
+  three ways this system fails quietly.
   v1.1.23 teaches Jack to run the family's paperwork. The Covey household
   captures documents in the TK Family app and drops scans into Google Drive;
   Jack now reads each one, renames it to the house pattern, files it into Covey
@@ -385,10 +404,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.23
-  bootstrap: 1.1.23
-  update: 1.1.23
-  verify: 1.1.23
+  platform: 1.1.24
+  bootstrap: 1.1.24
+  update: 1.1.24
+  verify: 1.1.24
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
@@ -681,10 +700,76 @@ tk_family:
   # scan script is plain HTTP with no model in the loop: when there is nothing
   # to do it prints {"wakeAgent": false} and the LLM never runs. An idle minute
   # costs three HTTP calls, not a token.
+  # A document Jack genuinely cannot read stays in an inbox, which is right: a
+  # person needs to reshoot it. But the scan would then re-raise it every
+  # RETRY_MINUTES and burn a model run each time to rediscover that it is still
+  # illegible. So Jack renames it with this prefix, and the scan counts it but
+  # never wakes anybody for it again.
+  #
+  # A prefix rather than a state file on purpose. Taylor opens Drive, sorts by
+  # name, and every document waiting on him is at the top saying what it wants.
+  # Clearing it is a rename, which he can do himself from his phone.
+  parked_prefix: "NEEDS RESHOOT - "
+
   schedule: "* * * * *"
   cron_job_name: tk-family-docs
 
   root_folder: 1phyXCIAiQepMflVlmOfLbbtLRrrBhuxt   # Covey Files
+
+  # What Jack may do to the family's files and records (v1.1.24).
+  #
+  # Taylor asked for more access, not less: Jack should be able to add, update,
+  # move, rename and create files. The thing he does NOT want is invention, so
+  # the boundary is drawn around PROVENANCE rather than around capability. Jack
+  # can do a great deal, and every single thing he does has to trace back to a
+  # document that actually exists and that he actually read.
+  #
+  # `guards` is the part that does the work. It is enforced in the
+  # tk-family-documents skill and checked by verify.sh, so it cannot quietly
+  # lapse the way a paragraph of prose can.
+  write_authority:
+    allowed:
+      - rename a file
+      - move a file between folders in the table
+      - upload or create a file that came from a document Jack read
+      - update the contents or metadata of a file he created or filed
+      - propose a task, bill or event through record_document_reading actions
+      - create a task, bill or event directly when Taylor asks for it in chat
+      - trash a file that is a confirmed duplicate of one already filed
+
+    denied:
+      # Not capability limits Taylor asked for, these are the two that are hard
+      # to undo. Both stay until he says otherwise.
+      - change sharing or permissions on anything    # exposes family records
+      - permanently delete                           # trash instead, 30 days back
+      - create a folder                              # Taylor's own rule, twice stated
+
+    guards:
+      # 1. Provenance. Jack is not an author. Every file he puts in this tree is
+      #    a document that was captured, scanned or attached by a person, or is
+      #    derived from one (a rename, a move, a split of a multi page scan).
+      #    He never writes a document from his own knowledge.
+      provenance: true
+
+      # 2. Search before create. A second copy of the July power bill is worse
+      #    than none, because now neither is trusted. Look in the destination
+      #    folder and in search_documents first.
+      search_before_create: true
+
+      # 3. Verify after write. Re-read the file after a rename or a move and
+      #    confirm the name and the parent are what was intended. Drive answers
+      #    200 to a rename that changed nothing (v2 wants `title`, not `name`),
+      #    so success is not proof.
+      verify_after_write: true
+
+      # 4. Quote, do not infer. Amounts, dates, account numbers and vendor names
+      #    come off the page. A number that cannot be read is a failed reading,
+      #    not an estimate.
+      quote_dont_infer: true
+
+      # 5. The confidence floor stays. Below this, the document stays in
+      #    0 Inbox with the low score recorded and a person looks.
+      confidence_floor: 0.6
 
   # The three drop zones the scan script watches, alongside the app queue.
   inboxes:

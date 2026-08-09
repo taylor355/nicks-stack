@@ -586,34 +586,52 @@ mcp_servers:
     headers:
       x-mcp-token: ${TK_FAMILY_TOKEN}
     connect_timeout: 60.0
-    # The server offers 23 tools. Jack is given 8.
+
+    # keepalive_interval is 3600 because this server is STATELESS, and the
+    # default 180 was actively breaking it (v1.1.24).
     #
-    # This is not only about tokens, though it is that too: MCP schemas are
-    # billed on every call to every model, and 15 unused schemas is the same
-    # dead weight that got agentmail, agentphone and orgo switched off in
-    # v1.1.12.
+    # Measured against the live endpoint on 2026-08-09: it issues no
+    # Mcp-Session-Id, answers Connection: close, has no SSE listen channel
+    # (a GET returns a JSON-RPC parse error), and happily serves a tools/call
+    # carrying a completely made-up session id. It is a Supabase edge function.
+    # Every POST stands alone. There is no session, so there is nothing to keep
+    # alive.
     #
-    # It is mainly about the spec's hardest rule. "Never create anything
-    # directly, propose it and let the family approve in the app" is enforced
-    # far better by not handing Jack create_task, add_bill and
-    # create_calendar_event than by telling him not to call them. Same for
-    # organize_drive_file, which matches folders by name substring in a tree
-    # where "Bills and Receipts" occurs fifteen times: the reliable way to stop
-    # him reaching for it is for it not to be there.
+    # Hermes did not know that. It pinged every 180s, the ping came back
+    # "McpError: Session terminated", it reconnected, and one interval later the
+    # same thing happened. A session is only marked healthy once it survives a
+    # full keepalive interval, so it never was, the rapid-drop budget drained
+    # five reconnects at a time, and the server got PARKED: all 23 tools
+    # deregistered for 300 seconds. Observed 8 times in half an hour, with a
+    # real park from 01:35:28 to 01:38:56.
     #
-    # The family-life half of the app (groceries, recipes, chores, the shared
-    # calendar) is out of scope for what Taylor asked for, not judged useless.
-    # Adding a name below is all it takes to give any of it back.
-    tools:
-      include:
-        - list_pending_documents      # the queue
-        - get_document                # one document plus its signed URL
-        - search_documents            # pair a Drive arrival with its app card
-        - record_document_reading     # the write-back, and where actions are PROPOSED
-        - mark_document_filed         # where it ended up
-        - list_bills                  # match a receipt to the bill it pays
-        - list_tasks                  # find the payment task to propose closing
-        - get_household_overview      # members, properties, projects
+    # That is the worst failure this integration can have. A parked server does
+    # not raise an error, it just is not there, so a woken Jack would look at an
+    # empty tool list and tell Taylor there were no documents.
+    #
+    # At an hour, the pointless ping effectively stops, and liveness comes from
+    # the only thing that actually means anything against a stateless endpoint:
+    # a real tool call, which reconnects lazily and marks the session proven.
+    keepalive_interval: 3600
+    # ALL 23 tools, deliberately. v1.1.23b withheld fifteen of them so that
+    # "propose, never create" could not be broken by accident; Taylor asked for
+    # the opposite trade and he is right about which risk is bigger here. A Jack
+    # who cannot move a file is useless every day. A Jack who occasionally
+    # creates something unnecessary is annoying once, and it is visible, and it
+    # is undoable.
+    #
+    # The rule did not go away, it moved. It is now enforced where fabrication
+    # actually happens, in the tk-family-documents skill: every write must trace
+    # to a document he actually read, he searches before he creates, and he
+    # re-reads after he writes to confirm the write did what he intended. See
+    # tk_family.write_authority in platform.yaml for the full boundary.
+    #
+    # One tool still carries a real trap rather than a policy question:
+    # organize_drive_file matches the destination by folder NAME SUBSTRING, and
+    # "Bills and Receipts" occurs fifteen times in this tree. It is exposed
+    # because Taylor asked for full access, and the skill tells him to reach for
+    # the Composio path instead, which does strictly more (rename and re-parent
+    # in one call, addressed by id).
 
   # Composio Sessions. The entry between the sentinels below is INJECTED at
   # run time by nicks-stack-composio-session, and only once a session has been

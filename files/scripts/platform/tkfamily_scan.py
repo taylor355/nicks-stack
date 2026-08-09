@@ -33,6 +33,7 @@ Two things stop this from becoming a wake-up storm.
 Usage:
     tkfamily_scan.py            scan, update state, emit the wake gate (cron)
     tkfamily_scan.py --status   human-readable, never touches state or the gate
+    tkfamily_scan.py --audit    walk all 45 folders and report what is off
 """
 # NOTE ON " / ": Hermes' cron lifecycle guard scans a job's script as if it were
 # a shell command and tries to read every token that looks like a path. A bare
@@ -65,6 +66,7 @@ MAX_WAKES = 5           # after this many wakes for one item, call it stuck
 STUCK_MINUTES = 360     # and re-raise it only every six hours
 FAIL_WAKE_AT = (15, 60, 240)   # consecutive-failure counts that earn a wake
 HTTP_TIMEOUT = 45
+BATCH = 20             # folders per COMPOSIO_MULTI_EXECUTE_TOOL call (its cap is 50)
 
 
 # ---------------------------------------------------------------------------
@@ -156,42 +158,56 @@ def drive_list(folder_ids: dict) -> dict:
                            "COMPOSIO_API_KEY unresolved) — cannot read the "
                            "Drive drop zones")
     account = spec().get("drive_account") or None
-    paths = list(folder_ids)
-    tools = []
-    for path in paths:
-        item = {"tool_slug": "GOOGLEDRIVE_FIND_FILE",
-                "arguments": {"folder_id": folder_ids[path], "trashed": False,
-                              "pageSize": 50,
-                              "fields": "files(id,name,mimeType,createdTime)"}}
-        if account:
-            # `account` belongs on the ITEM, not at the top level. Put it at the
-            # top level and Composio silently uses the default account, which is
-            # NOT the owner of Covey Files.
-            item["account"] = account
-        tools.append(item)
+    all_paths = list(folder_ids)
+    out = {path: [] for path in all_paths}
 
-    payload = _rpc(url, {"x-api-key": key}, "tools/call",
-                   {"name": "COMPOSIO_MULTI_EXECUTE_TOOL",
-                    "arguments": {"tools": tools,
-                                  "sync_response_to_workbench": False}})
-    body = json.loads(_tool_text(payload))
-    if not body.get("successful", True):
-        raise RuntimeError("composio multi-execute failed: %s"
-                           % json.dumps(body.get("error"))[:300])
+    # COMPOSIO_MULTI_EXECUTE_TOOL caps at 50 items and the whole-tree audit asks
+    # for 45, so batch rather than sit one folder under the ceiling.
+    for start in range(0, len(all_paths), BATCH):
+        paths = all_paths[start:start + BATCH]
+        tools = []
+        for path in paths:
+            item = {"tool_slug": "GOOGLEDRIVE_FIND_FILE",
+                    "arguments": {"folder_id": folder_ids[path], "trashed": False,
+                                  "pageSize": 100,
+                                  "fields": "files(id,name,mimeType,createdTime,trashed)"}}
+            if account:
+                # `account` belongs on the ITEM, not at the top level. Put it at
+                # the top level and Composio silently uses the default account,
+                # which is NOT the owner of Covey Files.
+                item["account"] = account
+            tools.append(item)
 
-    out = {path: [] for path in paths}
-    for result in (body.get("data") or {}).get("results") or []:
-        idx = result.get("index")
-        if not isinstance(idx, int) or idx >= len(paths):
-            continue
-        response = result.get("response") or {}
-        if not response.get("successful"):
-            raise RuntimeError("listing %s failed: %s"
-                               % (paths[idx], json.dumps(response)[:200]))
-        for f in (response.get("data") or {}).get("files") or []:
-            if f.get("mimeType") == "application/vnd.google-apps.folder":
-                continue      # a drop zone holds documents, not subfolders
-            out[paths[idx]].append(f)
+        payload = _rpc(url, {"x-api-key": key}, "tools/call",
+                       {"name": "COMPOSIO_MULTI_EXECUTE_TOOL",
+                        "arguments": {"tools": tools,
+                                      "sync_response_to_workbench": False}})
+        body = json.loads(_tool_text(payload))
+        if not body.get("successful", True):
+            raise RuntimeError("composio multi-execute failed: %s"
+                               % json.dumps(body.get("error"))[:300])
+
+        for result in (body.get("data") or {}).get("results") or []:
+            idx = result.get("index")
+            if not isinstance(idx, int) or idx >= len(paths):
+                continue
+            response = result.get("response") or {}
+            if not response.get("successful"):
+                raise RuntimeError("listing %s failed: %s"
+                                   % (paths[idx], json.dumps(response)[:200]))
+            for f in (response.get("data") or {}).get("files") or []:
+                if f.get("mimeType") == "application/vnd.google-apps.folder":
+                    continue  # a drop zone holds documents, not subfolders
+                # GOOGLEDRIVE_FIND_FILE's `trashed: False` argument does NOT
+                # filter: a file in the trash still comes back in the listing.
+                # Found by the first whole-tree audit, which reported a file
+                # that had been trashed twenty minutes earlier. Left unhandled
+                # this is worse in the scan than in the audit, because a trashed
+                # document in a drop zone can never be cleared and would wake
+                # Jack every retry interval forever. So filter it here.
+                if f.get("trashed"):
+                    continue
+                out[paths[idx]].append(f)
     return out
 
 
@@ -232,8 +248,23 @@ def collect() -> tuple[list, dict]:
     return docs, drops
 
 
+def parked_prefix() -> str:
+    return str(spec().get("parked_prefix") or "")
+
+
+def is_parked(name: str) -> bool:
+    """A document Jack has already read and could not use. It keeps sitting in
+    an inbox so a person deals with it, but it must never wake him again: five
+    model runs to rediscover that a photo is still blurry is pure waste."""
+    pref = parked_prefix()
+    return bool(pref) and (name or "").startswith(pref)
+
+
 def item_keys(docs: list, drops: dict) -> dict:
-    """Stable key -> one-line label, for every unit of work found."""
+    """Stable key -> one-line label, for every unit of WAKEABLE work found.
+
+    Parked files are deliberately excluded: they are real, they show up in
+    --status and --audit, and they are not work the agent can advance."""
     items = {}
     for d in docs:
         did = d.get("id") or d.get("document_id") or ""
@@ -241,11 +272,139 @@ def item_keys(docs: list, drops: dict) -> dict:
             items["doc:%s" % did] = d
     for path, files in drops.items():
         for f in files:
+            if is_parked(f.get("name")):
+                continue
             items["file:%s" % f.get("id")] = dict(f, _path=path)
     return items
 
 
+# ---------------------------------------------------------------------------
+# audit
+# ---------------------------------------------------------------------------
+# Named after what it is for: answering "is this actually working" without
+# waiting for something to go visibly wrong. The scan is a per-minute tripwire
+# and deliberately only looks at four folders. This walks all forty-five, and
+# looks for the failures that are silent by construction.
+NAME_RE = None
+
+
+def _name_pattern():
+    global NAME_RE
+    if NAME_RE is None:
+        import re
+        # MM-DD-YYYY - Vendor - Description.ext, plain hyphen separators.
+        NAME_RE = re.compile(r"^\d{2}-\d{2}-\d{4} - [^-]+ - .+\.[A-Za-z0-9]+$")
+    return NAME_RE
+
+
+def cmd_audit() -> int:
+    cfg = spec()
+    folders = cfg.get("folders") or {}
+    inboxes = cfg.get("inboxes") or {}
+    if not folders:
+        print("tk_family.folders is empty, nothing to audit")
+        return 1
+
+    print("TK Family audit  (%s)" % time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+    print("walking %d folders as %s" % (len(folders),
+                                        cfg.get("drive_account_email") or "the default account"))
+    print("")
+
+    try:
+        listing = drive_list(folders)
+    except Exception as exc:
+        print("could not walk the tree: %s" % exc)
+        return 1
+
+    unnamed, dupes, stale, empty, parked = [], {}, [], [], []
+    total = 0
+    by_name = {}
+    now = time.time()
+
+    for path, files in sorted(listing.items()):
+        total += len(files)
+        if not files and path not in inboxes:
+            empty.append(path)
+        for f in files:
+            name = f.get("name") or ""
+            by_name.setdefault(name, []).append(path)
+            if is_parked(name):
+                parked.append((path, name))
+            elif path in inboxes or path == "0 Inbox":
+                created = f.get("createdTime") or ""
+                age_days = None
+                if created:
+                    try:
+                        import calendar, email.utils      # noqa: F401
+                        from datetime import datetime
+                        dt = datetime.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")
+                        age_days = (now - dt.timestamp()) // 86400
+                    except Exception:
+                        age_days = None
+                stale.append((path, name, age_days))
+            elif not _name_pattern().match(name):
+                unnamed.append((path, name))
+
+    for name, paths in by_name.items():
+        if len(paths) > 1:
+            dupes[name] = paths
+
+    print("%d file(s) across the tree" % total)
+    print("")
+
+    if parked:
+        print("WAITING ON A PERSON (%d)" % len(parked))
+        print("  Jack read these and could not use them. He will not raise them")
+        print("  again. Reshoot or fix, then drop the prefix from the name.")
+        for path, name in sorted(parked):
+            print("    %-40s %s" % (path[:40], name[:70]))
+        print("")
+
+    if stale:
+        print("SITTING IN AN INBOX (%d)" % len(stale))
+        print("  Every one of these is work the loop has not finished.")
+        for path, name, age in sorted(stale, key=lambda r: -(r[2] or 0)):
+            age_s = "unknown age" if age is None else "%d day(s) old" % age
+            print("    %-40s %-52s %s" % (path[:40], name[:52], age_s))
+        print("")
+
+    if unnamed:
+        print("FILED BUT NOT RENAMED (%d)" % len(unnamed))
+        print("  These do not match MM-DD-YYYY - Vendor - Description.ext, so")
+        print("  they were filed by hand or by an older run. Worth renaming.")
+        for path, name in sorted(unnamed):
+            print("    %-40s %s" % (path[:40], name[:70]))
+        print("")
+
+    if dupes:
+        print("SAME NAME IN MORE THAN ONE PLACE (%d)" % len(dupes))
+        print("  Two copies of one document means neither is trusted.")
+        for name, paths in sorted(dupes.items()):
+            print("    %s" % name[:70])
+            for path in paths:
+                print("        %s" % path)
+        print("")
+
+    if empty:
+        print("EMPTY FOLDERS (%d)" % len(empty))
+        print("  Not a problem, just the shape of the tree so far.")
+        print("    " + ", ".join(sorted(empty)[:12]))
+        if len(empty) > 12:
+            print("    and %d more" % (len(empty) - 12))
+        print("")
+
+    problems = len(stale) + len(unnamed) + len(dupes) + len(parked)
+    if problems:
+        print("%d thing(s) worth a look." % problems)
+    else:
+        print("Nothing out of place. Inboxes empty, every filed name matches the")
+        print("pattern, no duplicates.")
+    return 0
+
+
 def main() -> int:
+    if "--audit" in sys.argv[1:]:
+        return cmd_audit()
     status_only = "--status" in sys.argv[1:]
     cfg = spec()
     if not cfg or not cfg.get("enabled", True):
@@ -313,10 +472,16 @@ def main() -> int:
     wake = bool(fresh or retry or stuck)
 
     if status_only:
+        parked = [(p, f.get("name")) for p, fs in drops.items() for f in fs
+                  if is_parked(f.get("name"))]
         print("TK Family scan  (%s)" % time.strftime("%Y-%m-%d %H:%M:%S %Z"))
         print("  app queue      : %d pending" % len(docs))
         for path, files in drops.items():
-            print("  %-38s: %d file(s)" % (path, len(files)))
+            live = sum(1 for f in files if not is_parked(f.get("name")))
+            extra = "" if live == len(files) else "  (+%d parked)" % (len(files) - live)
+            print("  %-38s: %d file(s)%s" % (path, live, extra))
+        for path, name in parked:
+            print("  waiting on a person: %s  in %s" % (name, path))
         print("  tracked items  : %d" % len(seen))
         print("  would wake Jack: %s" % ("yes" if wake else "no"))
         if stuck:

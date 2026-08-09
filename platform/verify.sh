@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.23"
+readonly SCRIPT_VERSION="1.1.24"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -883,7 +883,7 @@ print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
 fi
 
 # ==========================================================================
-section "8c. TK Family document processing (v1.1.23)"
+section "8c. TK Family document processing (v1.1.24)"
 # ==========================================================================
 # Jack reads, renames and files the Covey family's scanned documents. Three
 # things can break this silently, so all three are checked here:
@@ -986,21 +986,100 @@ else
   warn "tkfamily MCP server is absent, disabled, or does not source its token from \${TK_FAMILY_TOKEN}"
 fi
 
-# "Propose, never create" is enforced by the tool surface, not only by the
-# skill text. If the allowlist ever goes away, Jack gets create_task, add_bill,
-# create_calendar_event and the name-matching organize_drive_file back, and the
-# rule becomes advisory again.
-if python3 - "$HERMES_HOME/config.yaml" <<'PYEOF' 2>/dev/null
+# The keepalive default of 180s PARKS this server (v1.1.24). It is stateless,
+# so the ping fails every interval, the session never proves healthy, and after
+# five reconnects all 23 tools are deregistered for 300s. A parked server is
+# silent: Jack sees an empty tool list and reports no documents.
+TK_KA="$(python3 - "$HERMES_HOME/config.yaml" <<'PYEOF' 2>/dev/null || true
 import sys, pathlib, yaml
 d = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
-inc = ((((d.get("mcp_servers") or {}).get("tkfamily") or {}).get("tools") or {}).get("include") or [])
-forbidden = {"create_task", "add_bill", "create_calendar_event", "organize_drive_file"}
-sys.exit(0 if inc and not (set(inc) & forbidden) else 1)
+print(((d.get("mcp_servers") or {}).get("tkfamily") or {}).get("keepalive_interval") or 0)
 PYEOF
-then
-  pass "tkfamily allowlist withholds create_task / add_bill / create_calendar_event / organize_drive_file"
+)"
+if [[ -n "$TK_KA" ]] && (( ${TK_KA%%.*} >= 900 )); then
+  pass "tkfamily keepalive_interval ${TK_KA}s — no spurious pings against a stateless endpoint"
 else
-  warn "tkfamily exposes direct-create or name-matching Drive tools — 'propose, never create' is only advisory now"
+  fail "tkfamily keepalive_interval is ${TK_KA:-unset} — at the 180s default this server gets PARKED and its tools silently vanish"
+fi
+
+# And the live proof: parks in the last hour of agent log.
+if [[ -f "$HERMES_HOME/logs/agent.log" ]]; then
+  TK_PARKS="$(grep -c "tkfamily.*parking" "$HERMES_HOME/logs/agent.log" 2>/dev/null || echo 0)"
+  if [[ "${TK_PARKS:-0}" -eq 0 ]]; then
+    pass "tkfamily has never been parked in this log"
+  else
+    note "tkfamily was parked ${TK_PARKS} time(s) historically — expected if the log predates the keepalive fix"
+  fi
+fi
+
+# Jack has the full tool surface by Taylor's decision (v1.1.24), so the thing
+# that keeps him from inventing records is no longer the tool list. It is the
+# five guards, and they live in two files that have to agree: platform.yaml
+# declares them and the skill is where they actually bind. Check both, because
+# a guard declared and not taught is worse than one that was never claimed.
+TK_GUARDS="$(python3 - "$HERMES_HOME/platform.yaml" "$TK_SKILL" <<'PYEOF' 2>/dev/null || true
+import sys, pathlib, yaml, json
+try:
+    spec = (yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}).get("tk_family") or {}
+except Exception:
+    print("unreadable"); raise SystemExit
+wa = spec.get("write_authority") or {}
+g = wa.get("guards") or {}
+want = ["provenance", "search_before_create", "verify_after_write", "quote_dont_infer"]
+missing = [k for k in want if not g.get(k)]
+floor = g.get("confidence_floor")
+denied = " ".join(str(x).lower() for x in (wa.get("denied") or []))
+# The skill has to actually teach the two guards that are pure behaviour: a
+# declared verify-after-write nobody was told about protects nothing.
+try:
+    skill = pathlib.Path(sys.argv[2]).read_text().lower()
+except OSError:
+    skill = ""
+taught = ("read it back" in skill or "read the file back" in skill) and "provenance" in skill
+print(json.dumps({"missing": missing, "floor": floor,
+                  "denies_permissions": "permission" in denied or "sharing" in denied,
+                  "denies_hard_delete": "permanently delete" in denied,
+                  "denies_folders": "create a folder" in denied,
+                  "taught": taught}))
+PYEOF
+)"
+if [[ -z "$TK_GUARDS" || "$TK_GUARDS" == "unreadable" ]]; then
+  warn "tk_family.write_authority is not declared — nothing bounds what Jack may do to the family's files"
+else
+  tg() { printf '%s' "$TK_GUARDS" | python3 -c "
+import json,sys
+try: v=json.load(sys.stdin).get(sys.argv[1])
+except Exception: v=None
+print(','.join(map(str,v)) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
+
+  if [[ -z "$(tg missing)" ]]; then
+    pass "all four fabrication guards declared (provenance, search-before-create, verify-after-write, quote-dont-infer)"
+  else
+    fail "fabrication guard(s) NOT declared: $(tg missing) — Jack has full write access with nothing holding it"
+  fi
+
+  if [[ "$(tg taught)" == "True" ]]; then
+    pass "the skill teaches provenance and read-back, so the guards are more than a yaml claim"
+  else
+    fail "tk_family guards are declared in platform.yaml but the skill does not teach them"
+  fi
+
+  FLOOR="$(tg floor)"
+  if [[ -n "$FLOOR" ]]; then
+    pass "confidence floor $FLOOR — below this a document waits for a person"
+  else
+    warn "no tk_family confidence floor declared — Jack has no stated point at which to stop guessing"
+  fi
+
+  # The two irreversible ones, plus Taylor's own folder rule.
+  if [[ "$(tg denies_permissions)" == "True" && "$(tg denies_hard_delete)" == "True" ]]; then
+    pass "sharing/permission changes and permanent deletion are both denied"
+  else
+    fail "the irreversible operations are not denied — Jack could widen access to family records or delete beyond recovery"
+  fi
+  [[ "$(tg denies_folders)" == "True" ]] \
+    && pass "folder creation denied — the tree cannot grow a '2027' on its own" \
+    || warn "folder creation is not denied; the folder table stops being the source of truth"
 fi
 
 # Presence of the credential, via the one canonical resolver. Never its value.
