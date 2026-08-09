@@ -16,10 +16,31 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.27
+version: 1.1.28
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.28 rebuilds the document skill against a tool surface that moved under
+  it. Taylor's version 2 instructions arrived the same night the TK Family
+  developer shipped, and the server went from 24 tools to 32. Two of them were
+  REMOVED: add_bill and list_bills are gone, because a bill is now a task tagged
+  Bill carrying the amount. The deployed skill named both, so it would have
+  called tools that no longer exist. It also told Jack to propose a create_bill
+  AND a create_task to pay it, which was right when they were separate lists and
+  now produces two rows for one bill. One action, and only one. Receipt matching
+  moves with it: list_tasks takes a tag, so a bill is found with tag Bill plus a
+  vendor search, and mark_bill_paid takes that task's id. organize_drive_file was
+  fixed on the app side and now takes destination_folder_id, refusing an
+  ambiguous name instead of silently picking one, so the standing advice to avoid
+  it is retired. Email is now a third arrival path, landing with the subject and
+  body in capture_note and no file to fetch. create_document_from_drive_file
+  becomes the FIRST call for anything in Drive rather than a branch to check for,
+  and its created:false answer is now the duplicate check. New guidance from
+  Taylor: he can edit every field on the card before approving, so a number he
+  can correct beats a blank he has to look up. That is not a licence to invent,
+  it rules out withholding a legible figure out of caution; doubt goes in
+  confidence. Meals, projects, chores and grocery tools are noted so Jack knows
+  they exist without pulling them into a document skill.
   v1.1.27 closes the document loop and stops the memory cap degrading silently.
   The TK Family developer shipped create_document_from_drive_file, so a scan
   dropped into Drive now becomes a review card like an in-app capture. Jack was
@@ -476,10 +497,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.27
-  bootstrap: 1.1.27
-  update: 1.1.27
-  verify: 1.1.27
+  platform: 1.1.28
+  bootstrap: 1.1.28
+  update: 1.1.28
+  verify: 1.1.28
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2

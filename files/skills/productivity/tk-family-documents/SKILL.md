@@ -26,22 +26,23 @@ files named "Scan Mar 26, 2020 at 2.02 PM.pdf" is not an organized folder.
 
 ## The two systems, and why they are not interchangeable
 
-**TK Family** (`tkfamily` MCP server, 23 tools) owns the document queue, the
-bill list and the task list. Everything you learn about a document goes back
+**TK Family** (`tkfamily` MCP server, 32 tools) owns the document queue and
+the task list. A bill is a task tagged `Bill`; there is no separate bill list. Everything you learn about a document goes back
 through `record_document_reading`, and everything you do to a file gets recorded
 with `mark_document_filed`.
 
 **Composio Google Drive** does the actual file work: list a folder, rename a
 file, move it between folders.
 
-TK Family also ships `organize_drive_file`. You have it, and you should almost
-never reach for it, because it matches the destination by folder **name
-substring** and `Bills and Receipts` occurs fifteen times in this tree. Ask it
-for "Bills and Receipts" and it will pick one, move a dental bill into the
-Gibson folder, and report success. The Composio path does strictly more anyway:
-it renames and re-parents in a single call, addressed by id. Use
-`organize_drive_file` only when the destination folder name is unique in the
-whole tree, and prefer the id path even then.
+`organize_drive_file` was fixed on 2026-08-09 and now takes
+`destination_folder_id`. Use that field, always. It used to match by folder name
+substring, and `Bills and Receipts` exists fifteen times in this tree, so a name
+picked an arbitrary one and reported success. It now refuses an ambiguous name
+and lists the candidates instead, but do not rely on that: pass the id.
+
+Either path is fine for the move. The Composio patch still does rename and
+re-parent in ONE call, which is why the steps below use it: a file is never
+renamed but unfiled. Use `organize_drive_file` when you only need to move.
 
 ## Reaching Drive as the right account
 
@@ -72,62 +73,35 @@ the last verified value. If a Drive call fails with an account error, run
 `jack composio accounts` and use the current googledrive id for
 taylor@tk-holdings.com. Do not tell Taylor to reconnect anything.
 
-## A Drive file with no app document
+## Every document gets a card now
 
-`record_document_reading` needs a `document_id`, and TK Family has no tool that
-turns a raw Drive file into a document record. So a file that arrives only in
-Drive cannot be written back to the app.
+There are three ways something arrives, and all three end up in
+`list_pending_documents`:
 
-Before you assume that is the case, call `search_documents` for the vendor or
-the file name: an app capture and its Scanner Pro upload are the same document
-seen twice, and pairing them is the whole point.
+- **Scanned in the app.** Already a document, with a `capture_note`.
+- **Dropped into Drive.** Scanner Pro, or a manual drop. Becomes a document the
+  moment you call `create_document_from_drive_file`.
+- **Forwarded by email.** Arrives with the subject and body in `capture_note`
+  and NO file to fetch. Read it from the note. There is nothing in Drive to
+  rename or move, so skip the filing steps and just record what it says.
 
-If there really is no matching document, still read it, still rename it, and
-still file it. Emptying the drop zone is the job. Skip
-`record_document_reading` and `mark_document_filed`, and say in your reply to
-Taylor that the file was filed but has no card in the app. Do not invent a
-document id and do not leave the file sitting there.
+For anything you find in Drive, **`create_document_from_drive_file` is the first
+call you make**, before reading it properly and before touching Drive:
 
-### First: check whether the ingest tool exists yet
+```json
+{"name": "create_document_from_drive_file",
+ "arguments": {
+   "drive_file_id": "104t4ylaHThoOEdPTcnltUlGLJZOdN9ae",
+   "drive_file_name": "Scan Aug 8, 2026 at 3.14 PM.pdf",
+   "drive_folder_path": "0 Inbox/Scanner Pro - Auto Upload Here",
+   "drive_link": "https://drive.google.com/file/d/104t4.../view",
+   "mime_type": "application/pdf"}}
+```
 
-Taylor has asked the TK Family developer for a tool that turns a Drive file into
-a document record, most likely called `create_document_from_drive_file`. **Look
-for it in your tool list before doing anything else in this section.**
-
-If it is there, the hole below is closed and this is the whole flow:
-
-1. Call it with the Drive file id, the current file name and the folder path.
-2. It returns a `document_id`.
-3. From there proceed exactly as you would for an app capture:
-   `record_document_reading` with your reading and any proposed task or bill in
-   `actions`, then file the file, then `mark_document_filed`.
-
-That is the good path. Taylor scans into Drive, gets a review card, and approves,
-edits or declines in the app like everything else. Prefer it over what follows
-whenever the tool is available, and stop reading the rest of this section.
-
-### If it does not exist yet: the hole, handled deliberately
-
-An app-captured document gets a review card, which is where a proposed task or
-bill is approved. A file dropped straight into Drive has no card, so there is
-nothing to propose against and no approval step exists. Creating the bill
-yourself would put a number you read once, unreviewed, into the list Taylor pays
-from. That is the exact mistake the review card exists to catch.
-
-So do not create it, and do not silently drop it either. Put it in your reply,
-in full, and ask:
-
-> Rocky Mountain Power, 117.76, due August 22, for the Heber home. Filed to
-> 2 Home/Utilities/Bills and Receipts. No card in the app since it came straight
-> from the scanner. Want me to add the bill and a task to pay it on the 19th?
-
-If he says yes, use `add_bill` and `create_task` directly. He approved it in
-chat, which is the same human check the card would have given you, just through
-a different door. Say what you created.
-
-The permanent fix is on the app side: one tool that mints a document from a
-Drive file id, so a scanner drop gets a review card like everything else. Until
-that exists, the sentence above is the approval step.
+It returns `{"document_id": "...", "created": true}`. Retrying is safe and
+expected: the same file twice returns the first record with `created: false`,
+never a second card. **If it comes back `created: false`, this file has already
+been handled. Move on, do not read it again.** That is your duplicate check.
 
 ## The loop
 
@@ -135,18 +109,19 @@ The cron job runs the scan for you. When it wakes you it has already told you
 exactly which documents are waiting and where they are, so do not re-poll
 everything: work the list you were handed.
 
-1. For an **app document**, call `get_document` for the full record and the
-   signed URL, and read it.
-2. For a **Drive file**, read it in place.
-3. Check it is not already filed: `search_documents` for the vendor, and list the
-   destination folder. A duplicate gets reconciled, not filed twice.
-4. Call `record_document_reading` with what you found, and propose any task or
-   bill in `actions`.
-5. Rename and move the Drive file in one patch (see below).
-6. Read the file back and confirm the name and the single parent. **Silently.**
+1. **Anything from Drive: `create_document_from_drive_file` first.** If it
+   returns `created: false` you have seen this file before. Stop there.
+2. Read it. An app document has a signed URL from `get_document`. An emailed
+   one is text in `capture_note` with nothing to fetch. A Drive file you read
+   in place.
+3. Call `record_document_reading` with what you found, and propose whatever
+   should happen in `actions`.
+4. Rename and move the Drive file in one patch (see below). Nothing to do here
+   for an emailed document.
+5. Read the file back and confirm the name and the single parent. **Silently.**
    This is a check you run, not news you deliver. It goes in your reply only
    when it FAILED.
-7. Call `mark_document_filed` with the file id, link, path and final name.
+6. Call `mark_document_filed` with the file id, link, path and final name.
 
 ## What you send Taylor afterwards
 
@@ -436,15 +411,23 @@ whatever area it belongs to. The dental bill goes to
 `1 Family/Medical/Bills and Receipts`. The power bill goes to
 `2 Home/Utilities/Bills and Receipts`.
 
-**The obligation lives in the app.** For every bill, propose both:
+**A bill IS a task tagged `Bill`.** There is no separate bills list any more,
+and as of 2026-08-09 the `add_bill` and `list_bills` tools no longer exist. A
+`create_bill` action creates a Bill-tagged task carrying the amount, dated
+**three days before the due date** so there is some runway.
 
-- a `create_bill` action with the vendor, amount, due date and account reference
-- a `create_task` action to actually pay it, **dated three days before the due
-  date** so there is some runway
+**Propose exactly one action for a bill.** One `create_bill`, with the vendor,
+amount, due date and account reference. **Do not also propose a `create_task` to
+pay it.** That was right when bills and tasks were separate lists; now it
+produces two rows for one bill and Taylor has to delete one.
 
-Taylor approves in the app, and the app creates them. "What do I owe right now"
-is answered by the app's bill list, which has amounts and dates and can remind
-him. That is the thing a folder is genuinely bad at.
+```json
+{"kind": "create_bill",
+ "label": "Willow Creek Dental, $312.40 due September 15",
+ "payload": {"name": "Willow Creek Dental", "amount": 312.40,
+             "due_date": "2026-09-15", "category": "Medical",
+             "account_reference": "4471"}}
+```
 
 ## Receipts
 
@@ -452,35 +435,43 @@ When Taylor pays a bill he drops or emails the receipt, and it arrives in
 `0 Inbox/Receipts to File`.
 
 1. Read the receipt for vendor, amount and payment date.
-2. **Look for the bill it pays.** `list_bills` has **no** vendor or search
-   filter, only `status` and `due_before`, so call
-   `list_bills {"status": "unpaid"}` and match the vendor yourself. Also check
-   the `Bills and Receipts` folder of the area that vendor's bills go to.
+2. **Find the bill it pays.** A bill is a Bill-tagged task, so:
+
+   ```json
+   {"name": "list_tasks", "arguments": {"tag": "Bill", "search": "dental"}}
+   ```
+
 3. **File the receipt in the same folder as the bill it pays.** They belong next
    to each other, so that answering "did I pay the dentist" is one look in one
    place.
 4. Name it as a receipt so the pair is obvious:
    `08-20-2026 - Willow Creek Dental - Payment Receipt for the August Statement.pdf`
-5. Propose marking the matching bill paid and closing its payment task, with the
-   `mark_bill_paid` and `complete_task` action kinds. Get the bill id from
-   `list_bills` and the task id from `list_tasks` (which **does** take `search`,
-   matched case-insensitively on the title).
+5. Propose `mark_bill_paid` with that task's id as `task_id`. Approving it
+   completes the task. You do not need a separate `complete_task` as well.
 
 **If you cannot find a matching bill,** file the receipt anyway by the same five
-routing checks, and say so in your summary. An unmatched receipt is still worth
-keeping. Do not invent a bill to attach it to.
+routing checks, and say so. An unmatched receipt is still worth keeping. Do not
+invent a bill to attach it to.
 
 ## Rules that always apply
 
 **For documents, propose. Do not create.** Put every task, bill and event in the
 `actions` array of `record_document_reading` and let the family approve it in the
-app. You have `create_task`, `add_bill` and `create_calendar_event` and they work
-fine; using them for a document you just read takes the human out of a decision
-they asked to be in. You will read a document wrong roughly one time in ten, and
-the review card is what catches it.
+app. You have `create_task` and `create_calendar_event` and they work fine; using
+them for a document you just read takes the human out of a decision they asked to
+be in. You will read a document wrong roughly one time in ten, and the review
+card is what catches it.
 
 That is about documents specifically. When Taylor asks you in chat to add a task
 or put something on the calendar, just do it. He asked.
+
+**Give your best reading rather than a blank.** Taylor can edit every field on
+the card before approving: the amount, the due date, the title, the folder, the
+filename. So a number he can correct is far more useful than an empty box he has
+to go look up. This does not loosen the rule against inventing: read it off the
+page, and if it genuinely is not there, leave it out and say so in the summary.
+What it rules out is leaving a legible figure blank because you felt unsure.
+Record the doubt in `confidence`, not by withholding.
 
 The `actions` array accepts exactly these kinds, and nothing else:
 `create_task`, `create_bill`, `create_event`, `file_only`, `mark_bill_paid`,
@@ -538,14 +529,8 @@ Sept 15, account 4471.
     "search_text": "<the full text you read off the page>",
     "actions": [
       {
-        "kind": "create_task",
-        "label": "Pay the Willow Creek dental bill, due September 15",
-        "payload": {"title": "Pay the Willow Creek dental bill",
-                    "due_date": "2026-09-12"}
-      },
-      {
         "kind": "create_bill",
-        "label": "Bill: $312.40 due September 15",
+        "label": "Willow Creek Dental, $312.40 due September 15",
         "payload": {"name": "Willow Creek Dental", "amount": 312.40,
                     "due_date": "2026-09-15", "category": "Medical",
                     "account_reference": "4471"}
@@ -555,7 +540,11 @@ Sept 15, account 4471.
 }
 ```
 
-The task is dated the 12th, three days before the bill is due.
+**One action, not two.** `create_bill` already produces a Bill-tagged task dated
+three days before the due date. Adding a `create_task` to pay it as well gives
+Taylor two rows for one bill and he has to delete one. An older version of these
+instructions asked for both; it was written when bills and tasks were separate
+lists.
 
 ## The folder table
 
@@ -620,6 +609,27 @@ File by folder id. Never walk the path, never create a folder. Root folder
 The same table lives in `platform.yaml` under `tk_family.folders`, which is what
 the scan script and `verify.sh` read. If you ever find the two disagreeing,
 platform.yaml wins and the drift is a bug worth telling Taylor about.
+
+## What else is on this server
+
+The server grew to 32 tools on 2026-08-09. Documents are what this skill covers,
+but if Taylor asks, you also have:
+
+- **Meals.** `list_recipes`, `extract_recipe_from_url` (reads a recipe off a
+  link and hands it back, it does NOT save; pass it to `add_recipe` once it
+  looks right), `list_meal_plan`, `plan_meal`. One dinner per date, and planning
+  over a date replaces what was there. `plan_meal` takes a plain `title`, so
+  "Leftovers" is a real answer. Prefer what the family already saved over
+  inventing something.
+- **Projects.** `create_project`, `update_project`, `list_projects`.
+- **Chores.** `list_chore_templates`, `create_chore_template`,
+  `delete_chore_template`.
+- **Groceries.** `update_grocery_items` ticks things off after a shop.
+- **Tasks.** `delete_task` is for something added in error. To record that a
+  task is FINISHED use `update_task` with status done, which keeps the history.
+
+Household tasks are mostly McKell's. Do not surface them to Taylor unless they
+are assigned to him or he asked.
 
 ## How the tree grows
 
