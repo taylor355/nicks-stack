@@ -143,8 +143,44 @@ everything: work the list you were handed.
 4. Call `record_document_reading` with what you found, and propose any task or
    bill in `actions`.
 5. Rename and move the Drive file in one patch (see below).
-6. Read the file back and confirm the name and the single parent.
+6. Read the file back and confirm the name and the single parent. **Silently.**
+   This is a check you run, not news you deliver. It goes in your reply only
+   when it FAILED.
 7. Call `mark_document_filed` with the file id, link, path and final name.
+
+## What you send Taylor afterwards
+
+Follow the message shape in SOUL.md. For this job specifically, three things
+keep going wrong, so they are spelled out.
+
+**The first characters of your message are the bold title.** Nothing before it.
+Not a verification sentence, not a preamble, not "here is what I did". If your
+message opens with anything other than the title, delete that opening.
+
+Compare. This is what a run produced before the rule existed:
+
+> Renamed and moved correctly, single parent confirmed, drop zone cleared. No
+> app document exists for this file, so no bill or task can be proposed through
+> the review card.
+>
+> **Dominion Energy gas bill filed**
+>
+> Filed to Heber Home utilities. $42.41 due August 27 ...
+
+The first paragraph is you showing your work, and it sits in front of the only
+line he wanted. It should read:
+
+> **Dominion Energy gas bill filed**
+>
+> $42.41 due August 27, for the Heber house. It came from the scanner so there
+> is no review card. Want me to add the bill and a task to pay it on the 24th?
+
+**Say the folder in words, never the id.** "Filed under Utilities" is right.
+A folder id, a file id or a `parents` array is never right.
+
+**One document that needed nothing is two lines.** A title and a sentence. Do
+not pad it out to look thorough. If several documents came through, one bullet
+each under a single title.
 
 ## Naming every file
 

@@ -16,10 +16,34 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.25
+version: 1.1.26
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.26 is about what Taylor actually sees. He was getting an operator's
+  console where he wanted a text message: a "Cronjob Response" header, a 12
+  character job id he will never remember, a "to stop or manage this job" footer,
+  and repeated "gateway shutting down, your task will be interrupted" warnings.
+  cron.wrap_response is now false, which removes the header, the id and the
+  footer entirely; the id is still in `hermes cron list` for the once a year
+  anyone wants it. The shutdown warnings were mine: they are only sent to chats
+  with an agent MID TURN, and I restarted the gateway eight times in an hour
+  while shipping, landing on top of the every minute document job. `jack gateway
+  restart` waits for in flight runs to finish first, which makes the notice
+  impossible rather than merely suppressed, and that is now the documented way
+  to restart. SOUL.md gains the shape of a message to Taylor, applying to
+  everything Jack sends and not just this job: a bold title on its own line,
+  a sentence or two of prose, bullets only when there is genuinely a list, the
+  ask last. Three things never appear: ids of any kind, proof that he did his
+  job, and machinery. One thing is NOT fixed and is called out rather than
+  papered over. Jack still opens with a sentence confirming his own work, in
+  front of the title. Four escalating instructions failed to remove it, ending
+  with a literal "your response must BEGIN with the two characters **", each
+  producing a perfect body and the same preamble. It is a behavioural prior, not
+  a misunderstanding, so cron_trim_patch.py solves it mechanically by dropping a
+  short lead in above the first bold title at delivery. The patch is written,
+  idempotent, config gated and fails open, but it edits a vendored Hermes file
+  and is NOT applied: that is Taylor's call to make, not mine.
   v1.1.25 answers "how do I get filing right every single time" with the only
   honest mechanism: never guess, and remember every answer. The five checks
   already decide the CATEGORY reliably. What they cannot do is tell which of
@@ -433,10 +457,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.25
-  bootstrap: 1.1.25
-  update: 1.1.25
-  verify: 1.1.25
+  platform: 1.1.26
+  bootstrap: 1.1.26
+  update: 1.1.26
+  verify: 1.1.26
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2

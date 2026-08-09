@@ -176,6 +176,23 @@ cron:
   model: claude-haiku-4-5
   model_drift_guard: true
 
+  # Hermes wraps every scheduled delivery in an operator-flavoured envelope:
+  #
+  #     Cronjob Response: tk-family-docs
+  #     (job_id: 4f6586bc0868)
+  #     -------------
+  #     <the actual message>
+  #     To stop or manage this job, send me a new message (e.g. "stop reminder ...").
+  #
+  # Taylor's reaction, and he is right: "the job IDs are 12 characters long and
+  # are random letters. I don't need to see that. I'm not gonna remember it. I
+  # want this to be like I'm texting a human. A human wouldn't text me that."
+  #
+  # Off. The message Jack wrote is the whole message. Nothing is lost: the job
+  # id is still in `hermes cron list` and `jack tkfamily status` for the one
+  # time a year anybody needs it, and Jack can say it out loud if asked.
+  wrap_response: false
+
 # Fallback chain (v1.1.11). Tried in order when the PRIMARY model fails with a
 # rate-limit, overload or connection error — not for cost routing, which is what
 # routing.yaml modes are for. Until now this was empty, so an Anthropic 529
