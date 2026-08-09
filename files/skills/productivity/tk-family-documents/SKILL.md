@@ -195,6 +195,13 @@ Rules for the name, all of which matter:
 - **Keep the file's real extension.** The pattern is written with `.pdf`
   because most scans are PDFs, but a JPEG stays `.jpg`. Renaming a JPEG to
   `.pdf` gives Taylor a file his viewer refuses to open.
+- **Long is fine, and Taylor has said so explicitly.** Never trim a description
+  at the cost of telling two documents apart.
+- **Name the property, not the street address.** A bill for 512 Wasatch Ridge
+  Drive is "for the Heber Home". He thinks in house names, and "Monthly Electric
+  Statement for 512 Wasatch Ridge Drive" is a filename he has to decode. The
+  address to property mapping lives in the routing memory, so check it: an
+  address that routes to `2 Home/Heber Home` is the Heber home in the name too.
 
 Month-day-year does not sort chronologically by filename. That is a deliberate
 tradeoff Taylor chose for readability. Sort these folders by Drive's

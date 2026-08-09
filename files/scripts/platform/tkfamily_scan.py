@@ -353,7 +353,12 @@ def cmd_route(argv: list) -> int:
             print("usage: jack tkfamily route add <vendor|address|account> "
                   "<value> <folder path>")
             return 2
-        kind = argv[1].rstrip("s") + "s"
+        # "address" does not pluralise by adding an s, and rstrip("s") turns it
+        # into "addres". Map explicitly rather than guessing at English.
+        alias = {"vendor": "vendors", "vendors": "vendors",
+                 "address": "addresses", "addresses": "addresses",
+                 "account": "accounts", "accounts": "accounts"}
+        kind = alias.get(argv[1].strip().lower(), "")
         if kind not in ROUTING_KINDS:
             print("kind must be one of: vendor, address, account")
             return 2
@@ -371,10 +376,12 @@ def cmd_route(argv: list) -> int:
                                  "at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                      time.gmtime())})
         routing_save(d)
+        label = {"vendors": "vendor", "addresses": "address",
+                 "accounts": "account"}[kind]
         if prev and prev != dest:
-            print("changed: %s %r  %s -> %s" % (kind[:-1], value, prev, dest))
+            print("changed: %s %r  %s -> %s" % (label, value, prev, dest))
         else:
-            print("learned: %s %r -> %s" % (kind[:-1], value, dest))
+            print("learned: %s %r -> %s" % (label, value, dest))
         print("Jack will file this one without asking from now on.")
         return 0
 
