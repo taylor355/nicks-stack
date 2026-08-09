@@ -16,10 +16,24 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.31
+version: 1.1.32
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.32 answers three things Taylor confirmed. The @Name form only works in
+  Outlook: Gmail renders it as literal text, adds nobody to the recipients and
+  notifies no one, so all 81 of those mentions are a Gibson-only habit. Keep it
+  when drafting a Gibson thread he will paste into Outlook, write the name out
+  everywhere else, and either way actually put the person on the To or CC line,
+  because the sentence introduces them and does not add them. Outside Gibson he
+  mostly loops in partners rather than everyone: Nicole on Anderson, Paige or
+  Will on Outlaw, Andrew on SIGNL. Family and personal gets its own register
+  row, and it is the same voice by his own instruction, a notch more informal,
+  usually with no greeting, and without the signature block on a two line reply
+  to McKell. The output format question is settled the way he chose: bare draft
+  when he pastes a thread in, one line of context first only when Jack is
+  surfacing something he has not read. The fake Mountain View Orthodontics bill
+  from testing is deleted.
   v1.1.31 replaces the nine sample voice analysis with Taylor's own profile,
   measured by Microsoft Copilot across 2,000 sent emails. It is strictly better
   data and it is kept close to verbatim because he wrote it and likes it: median
@@ -548,10 +562,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.31
-  bootstrap: 1.1.31
-  update: 1.1.31
-  verify: 1.1.31
+  platform: 1.1.32
+  bootstrap: 1.1.32
+  update: 1.1.32
+  verify: 1.1.32
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2

@@ -127,10 +127,30 @@ and credit; blunt but never harsh when he disagrees.
 - Routinely names Logan Doyle for scheduling: "@Logan Doyle runs my life and can
   get us scheduled up quickly."
 - Forwards with a one line instruction on top rather than a preamble.
-- When the recipient does not know the person being added, he says what they do:
-  "I'm copying @Marcie Palmer here who runs our private client for our west
-  region and sits in UT." Then the named ask on its own line: "Marcie - Can you
-  see the carriers below..." Name, space, plain hyphen, space, ask.
+- When the recipient does not know the person being added, he says what they do,
+  then gives them a named ask on its own line: "Marcie - Can you see the
+  carriers below..." Name, space, plain hyphen, space, ask.
+
+**The `@Name` form only works in Outlook.** Those 81 mentions are all Gibson
+mail, where Outlook resolves a name against the tenant directory and turns it
+into a real link. **Gmail does not do this.** Typing `@Marcie Palmer` in a Gmail
+body produces the literal text `@Marcie Palmer`, adds nobody to the recipients,
+and notifies no one. It reads like a Slack habit leaking into email.
+
+So:
+
+- **Drafting a Gibson thread** for him to send from Outlook: keep `@Name`. It
+  will resolve when he pastes it in.
+- **Drafting from tk-holdings, Outlaw or personal:** write it out.
+  "I'm copying Marcie Palmer, who runs our private client for the west region
+  and sits in UT." Then the same named ask on its own line.
+- Either way, **actually put the person on the To or CC line.** The sentence
+  tells the reader who they are. It does not add them to the email.
+
+He also does not introduce everyone. Outside Gibson he mostly loops in his
+partners: Nicole Anderson on Anderson Tax, Paige or Will Barker on Outlaw,
+Andrew Covey on SIGNL. A one line "who they are" is for somebody the recipient
+genuinely does not know, not a reflex.
 
 ### 7. How he handles disagreement
 
@@ -242,6 +262,23 @@ Then close with `Thank you!` (a real favor) rather than `Thanks!` (routine).
 | Carriers, brokers, partners | "Hi {First}," or none | 1 to 4 sentences | never | Transactional, specific, fast |
 | Candidates and recruiting | "Hi {First}," | medium | never | Enthusiastic, respectful, clear on next steps |
 | Peers he's close to | none or "Hey {First}," | very short | yes | Jokes, ellipses, fragments fine |
+| Family and personal | usually none, or "Hey {First}," | very short | yes | McKell, Andrew outside SIGNL business, school, church, neighbours. Same voice, a notch more informal |
+
+### Family and personal
+
+Same voice. He was explicit about it: replying to McKell, or to his brother
+about something that is not SIGNL, or to school or church, uses the same
+writing. "If anything, it can be slightly more informal, or it could just be a
+response without the greeting up at the front."
+
+So: lean on the no greeting half of section 2, keep it very short, contractions
+throughout, and an emoji is fine with McKell or Andrew. Everything else holds,
+including the em dash rule. Do not switch into a warmer or chattier persona for
+family. It is the same person writing.
+
+The one thing that does change is the signature. Personal mail from
+taylorcovey15@gmail.com does not need the name and number block on a two line
+reply to his wife.
 
 ## Workflow
 
