@@ -986,6 +986,23 @@ else
   warn "tkfamily MCP server is absent, disabled, or does not source its token from \${TK_FAMILY_TOKEN}"
 fi
 
+# "Propose, never create" is enforced by the tool surface, not only by the
+# skill text. If the allowlist ever goes away, Jack gets create_task, add_bill,
+# create_calendar_event and the name-matching organize_drive_file back, and the
+# rule becomes advisory again.
+if python3 - "$HERMES_HOME/config.yaml" <<'PYEOF' 2>/dev/null
+import sys, pathlib, yaml
+d = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
+inc = ((((d.get("mcp_servers") or {}).get("tkfamily") or {}).get("tools") or {}).get("include") or [])
+forbidden = {"create_task", "add_bill", "create_calendar_event", "organize_drive_file"}
+sys.exit(0 if inc and not (set(inc) & forbidden) else 1)
+PYEOF
+then
+  pass "tkfamily allowlist withholds create_task / add_bill / create_calendar_event / organize_drive_file"
+else
+  warn "tkfamily exposes direct-create or name-matching Drive tools — 'propose, never create' is only advisory now"
+fi
+
 # Presence of the credential, via the one canonical resolver. Never its value.
 # Section 8a already walks every declared key, but it reports an optional
 # missing key as a quiet note. With the server ENABLED, a missing token is not

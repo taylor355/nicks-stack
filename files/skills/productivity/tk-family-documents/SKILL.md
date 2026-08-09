@@ -34,11 +34,11 @@ with `mark_document_filed`.
 **Composio Google Drive** does the actual file work: list a folder, rename a
 file, move it between folders.
 
-TK Family also ships `organize_drive_file`, and you must **not** use it here. It
-matches the destination by folder **name substring**, and `Bills and Receipts`
-occurs fifteen times in this tree. It will move a dental bill into the Gibson
-folder without ever reporting an error. Move files by folder id, through
-Composio, always.
+TK Family also ships `organize_drive_file`, which is why it is not exposed to
+you: it matches the destination by folder **name substring**, and `Bills and
+Receipts` occurs fifteen times in this tree, so it would move a dental bill into
+the Gibson folder without ever reporting an error. Move files by folder id,
+through Composio, always.
 
 ## Reaching Drive as the right account
 
@@ -279,11 +279,18 @@ keeping. Do not invent a bill to attach it to.
 
 ## Rules that always apply
 
-**Never create anything directly.** You have `create_task`, `add_bill` and
-`create_calendar_event`. Do not use them for documents. Propose them in the
-`actions` array of `record_document_reading` instead. The family approves in the
-app and the app creates them. You will be wrong roughly one time in ten, and a
-filing system that quietly misfiles is worse than none.
+**Never create anything directly.** Propose every task, bill and event in the
+`actions` array of `record_document_reading`. The family approves in the app and
+the app creates them. You will be wrong roughly one time in ten, and a filing
+system that quietly misfiles is worse than none.
+
+You will not find `create_task`, `add_bill`, `create_calendar_event` or
+`organize_drive_file` on the `tkfamily` server. They exist, and they are
+deliberately not given to you, so that the rule above cannot be broken by
+accident. Eight tools are exposed: `list_pending_documents`, `get_document`,
+`search_documents`, `record_document_reading`, `mark_document_filed`,
+`list_bills`, `list_tasks` and `get_household_overview`. If you genuinely need
+one of the others, say so rather than working around it.
 
 The `actions` array accepts exactly these kinds, and nothing else:
 `create_task`, `create_bill`, `create_event`, `file_only`, `mark_bill_paid`,

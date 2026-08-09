@@ -586,6 +586,34 @@ mcp_servers:
     headers:
       x-mcp-token: ${TK_FAMILY_TOKEN}
     connect_timeout: 60.0
+    # The server offers 23 tools. Jack is given 8.
+    #
+    # This is not only about tokens, though it is that too: MCP schemas are
+    # billed on every call to every model, and 15 unused schemas is the same
+    # dead weight that got agentmail, agentphone and orgo switched off in
+    # v1.1.12.
+    #
+    # It is mainly about the spec's hardest rule. "Never create anything
+    # directly, propose it and let the family approve in the app" is enforced
+    # far better by not handing Jack create_task, add_bill and
+    # create_calendar_event than by telling him not to call them. Same for
+    # organize_drive_file, which matches folders by name substring in a tree
+    # where "Bills and Receipts" occurs fifteen times: the reliable way to stop
+    # him reaching for it is for it not to be there.
+    #
+    # The family-life half of the app (groceries, recipes, chores, the shared
+    # calendar) is out of scope for what Taylor asked for, not judged useless.
+    # Adding a name below is all it takes to give any of it back.
+    tools:
+      include:
+        - list_pending_documents      # the queue
+        - get_document                # one document plus its signed URL
+        - search_documents            # pair a Drive arrival with its app card
+        - record_document_reading     # the write-back, and where actions are PROPOSED
+        - mark_document_filed         # where it ended up
+        - list_bills                  # match a receipt to the bill it pays
+        - list_tasks                  # find the payment task to propose closing
+        - get_household_overview      # members, properties, projects
 
   # Composio Sessions. The entry between the sentinels below is INJECTED at
   # run time by nicks-stack-composio-session, and only once a session has been
