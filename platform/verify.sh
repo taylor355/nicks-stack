@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.22"
+readonly SCRIPT_VERSION="1.1.23"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -879,6 +879,134 @@ print(','.join(v) if isinstance(v,list) else ('' if v is None else v))" "$1"; }
     pass "SOUL.md carries the capability-routing rule into the agent prompt"
   else
     fail "SOUL.md does not mention Composio — the agent has not been told the routing rule"
+  fi
+fi
+
+# ==========================================================================
+section "8c. TK Family document processing (v1.1.23)"
+# ==========================================================================
+# Jack reads, renames and files the Covey family's scanned documents. Three
+# things can break this silently, so all three are checked here:
+#
+#   1. the folder table drifting between platform.yaml (what the scan script
+#      and this file read) and the skill (what the agent reads). A file filed
+#      by a stale id lands somewhere real and wrong, with no error anywhere.
+#   2. TK_FAMILY_TOKEN not reaching the gateway, which makes the MCP server
+#      present-but-401 rather than absent.
+#   3. the every-minute cron job missing, which is completely quiet: no error,
+#      no delivery, documents simply never get read.
+#
+# Presence and equality only. No token value is read and no document is touched.
+TK_SKILL="$HERMES_HOME/skills/productivity/tk-family-documents/SKILL.md"
+TK_SCAN="$HERMES_HOME/scripts/platform/tkfamily_scan.py"
+
+TK_JSON="$(python3 - "$HERMES_HOME/platform.yaml" "$TK_SKILL" <<'PYEOF' 2>/dev/null || true
+import json, re, sys, pathlib
+try:
+    import yaml
+    spec = (yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}).get("tk_family") or {}
+except Exception:
+    print(json.dumps({"ok": False, "reason": "platform.yaml tk_family unreadable"})); raise SystemExit
+folders = spec.get("folders") or {}
+inboxes = spec.get("inboxes") or {}
+out = {"ok": True, "enabled": bool(spec.get("enabled")), "folders": len(folders),
+       "inboxes": len(inboxes), "account": bool(spec.get("drive_account")),
+       "job": spec.get("cron_job_name") or "", "skill": "missing", "match": None}
+try:
+    text = pathlib.Path(sys.argv[2]).read_text()
+    out["skill"] = "present"
+    m = re.search(r'```json\n(\{\n  "0 Inbox".*?\n\})\n```', text, re.S)
+    out["match"] = bool(m) and json.loads(m.group(1)) == folders
+except OSError:
+    pass
+# Every inbox must also be a legal folder, or the scan watches a path the
+# agent is forbidden to file out of.
+out["inboxes_known"] = all(k in folders and folders[k] == v for k, v in inboxes.items())
+print(json.dumps(out))
+PYEOF
+)"
+
+tk_get() { printf '%s' "$TK_JSON" | python3 -c "
+import json,sys
+try: v=json.load(sys.stdin).get(sys.argv[1])
+except Exception: v=None
+print('' if v is None else v)" "$1"; }
+
+if [[ -z "$TK_JSON" || "$(tk_get ok)" != "True" ]]; then
+  warn "tk_family block not declared in platform.yaml — document processing is not configured"
+else
+  if [[ "$(tk_get folders)" -ge 40 && "$(tk_get inboxes)" == "3" ]]; then
+    pass "tk_family folder table declared ($(tk_get folders) destinations, $(tk_get inboxes) drop zones)"
+  else
+    fail "tk_family folder table looks wrong ($(tk_get folders) destinations, $(tk_get inboxes) drop zones)"
+  fi
+
+  if [[ "$(tk_get inboxes_known)" == "True" ]]; then
+    pass "every drop zone is also a declared folder id"
+  else
+    fail "a tk_family inbox id disagrees with the folders table — the scan would watch a path the agent cannot file out of"
+  fi
+
+  if [[ "$(tk_get account)" == "True" ]]; then
+    pass "tk_family.drive_account pinned — Drive calls will not fall back to the non-owner default"
+  else
+    warn "tk_family.drive_account is unset — Composio would use the default Drive account, which does NOT own Covey Files"
+  fi
+
+  case "$(tk_get skill)/$(tk_get match)" in
+    present/True)  pass "tk-family-documents skill installed, folder table matches platform.yaml" ;;
+    present/False) fail "tk-family-documents folder table DRIFTED from platform.yaml — the agent would file by stale ids" ;;
+    present/*)     warn "tk-family-documents skill installed but its folder table could not be parsed" ;;
+    *)             warn "tk-family-documents skill not installed — the agent has no filing instructions" ;;
+  esac
+fi
+
+if [[ -f "$TK_SCAN" ]]; then
+  if python3 "$TK_SCAN" --status >/dev/null 2>&1; then
+    pass "tkfamily_scan.py installed and runs"
+  else
+    warn "tkfamily_scan.py installed but --status did not succeed (TK Family or Composio may be unreachable)"
+  fi
+else
+  warn "tkfamily_scan.py not installed — nothing polls for new documents"
+fi
+
+# The MCP server itself: enabled, and pointing its header at the runtime secret
+# rather than an inline token.
+if python3 - "$HERMES_HOME/config.yaml" <<'PYEOF' 2>/dev/null
+import sys, pathlib, yaml
+d = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text()) or {}
+s = ((d.get("mcp_servers") or {}).get("tkfamily") or {})
+hdr = (s.get("headers") or {}).get("x-mcp-token", "")
+sys.exit(0 if s.get("enabled") and hdr == "${TK_FAMILY_TOKEN}" else 1)
+PYEOF
+then
+  pass "tkfamily MCP server enabled, token read from \${TK_FAMILY_TOKEN} (never inline)"
+else
+  warn "tkfamily MCP server is absent, disabled, or does not source its token from \${TK_FAMILY_TOKEN}"
+fi
+
+# Presence of the credential, via the one canonical resolver. Never its value.
+# Section 8a already walks every declared key, but it reports an optional
+# missing key as a quiet note. With the server ENABLED, a missing token is not
+# quiet: Hermes connects and every call comes back 401, which reads to the
+# agent as "the household has no documents" rather than as a broken credential.
+if printf '%s' "$SECRETS_JSON" | python3 -c "
+import json,sys
+k=[x for x in json.load(sys.stdin).get('keys',[]) if x.get('key')=='TK_FAMILY_TOKEN']
+sys.exit(0 if k and k[0].get('available') and k[0].get('in_runtime_env') else 1)" 2>/dev/null; then
+  pass "TK_FAMILY_TOKEN resolves and is in the gateway runtime env"
+else
+  warn "TK_FAMILY_TOKEN is not in the gateway runtime env — the TK Family server will answer 401 to every call; run: sudo nicks-stack-secrets render"
+fi
+
+# The loop itself. A missing job is the quietest failure in this section.
+TK_JOB="$(tk_get job)"
+if [[ -n "$TK_JOB" ]]; then
+  if hermes cron list 2>/dev/null | grep -q "$TK_JOB"; then
+    pass "cron job '$TK_JOB' registered — documents are being polled"
+  else
+    warn "cron job '$TK_JOB' is not registered — captured documents will never be read"
   fi
 fi
 

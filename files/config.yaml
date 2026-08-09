@@ -301,6 +301,7 @@ secrets:
       IDEABROWSER_KEY: op://Hermes/Hermes Agent Secrets/IDEABROWSER_KEY
       COMPOSIO_API_KEY: op://Hermes/Hermes Agent Secrets/COMPOSIO_API_KEY
       X_APP_ONLY_BEARER_TOKEN: op://Hermes/Hermes Agent Secrets/X_APP_ONLY_BEARER_TOKEN
+      TK_FAMILY_TOKEN: op://Hermes/Hermes Agent Secrets/TK_FAMILY_TOKEN
     binary_path: /usr/bin/op
 _config_version: 33
 session_reset:
@@ -569,6 +570,23 @@ mcp_servers:
     # runs ON this box; orgo_desktop_* covers local desktop work. Re-enable for
     # fleet management.
     enabled: false
+  # TK Family (v1.1.23). The Covey household's document queue, bill list and
+  # task list, hosted as a Supabase edge function speaking plain JSON-RPC 2.0.
+  # 23 tools. This is the ONE server Jack is allowed to write household records
+  # through, and even then only by PROPOSING actions on record_document_reading
+  # — never by calling create_task / add_bill / create_calendar_event himself.
+  #
+  # The token is a runtime secret (op://Hermes/Hermes Agent Secrets/
+  # TK_FAMILY_TOKEN) rendered into ~/.hermes/runtime/secrets.env at gateway
+  # start. It is never written into this file. Taylor can revoke it from
+  # TK Family, Settings -> Integrations without touching the repo.
+  tkfamily:
+    url: https://oejdjsdzlkerchtdabik.supabase.co/functions/v1/mcp-server
+    enabled: true
+    headers:
+      x-mcp-token: ${TK_FAMILY_TOKEN}
+    connect_timeout: 60.0
+
   # Composio Sessions. The entry between the sentinels below is INJECTED at
   # run time by nicks-stack-composio-session, and only once a session has been
   # established and validated. It is deliberately ABSENT otherwise, so Hermes

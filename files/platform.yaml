@@ -16,10 +16,28 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.22
-released: 2026-08-07
+version: 1.1.23
+released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.23 teaches Jack to run the family's paperwork. The Covey household
+  captures documents in the TK Family app and drops scans into Google Drive;
+  Jack now reads each one, renames it to the house pattern, files it into Covey
+  Files by folder id, and PROPOSES the task or bill rather than creating it. The
+  TK Family MCP server (23 tools) is wired with its token as a runtime secret,
+  never inline. The every-minute poll Taylor asked for runs as tkfamily_scan.py
+  behind Hermes' cron wake gate: three HTTP calls a minute with no model in the
+  loop, and the agent wakes only when something is actually waiting, with
+  re-wake and failure backoff so a document Jack cannot clear does not summon
+  him sixty times an hour. Three facts were verified against the live tree
+  rather than assumed. Covey Files is owned by taylor@tk-holdings.com, and
+  Composio's default Drive account is the personal one, so omitting `account`
+  acts as a non-owner while the Outlaw account cannot read the tree at all.
+  Rename and move are one GOOGLEDRIVE_UPDATE_FILE_METADATA_PATCH call, and it is
+  Drive v2, so the field is `title` and not `name`. And TK Family's own
+  organize_drive_file matches folders by name substring, which is unusable in a
+  tree where "Bills and Receipts" occurs fifteen times. The folder table lives
+  once in platform.yaml; verify.sh fails if the skill's copy drifts from it.
   v1.1.22 points Jack at the databases where follow-ups actually live. In the
   first brief he could not re-confirm "Follow up with Rich - CA Property" and
   said so rather than guessing, which was the right behaviour but the wrong
@@ -367,10 +385,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.22
-  bootstrap: 1.1.22
-  update: 1.1.22
-  verify: 1.1.22
+  platform: 1.1.23
+  bootstrap: 1.1.23
+  update: 1.1.23
+  verify: 1.1.23
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
@@ -579,6 +597,9 @@ runtime_secrets:
     - env: TELEGRAM_BOT_TOKEN
       required: true
       consumer: hermes-gateway (Telegram transport)
+    - env: TK_FAMILY_TOKEN
+      required: false
+      consumer: tk-family MCP server (x-mcp-token) + tkfamily_scan.py
 
   # Hermes writes resolved op:// values to a PLAINTEXT json cache when it does
   # its own resolution. The platform never enables that, but a stale file can
@@ -619,6 +640,130 @@ composio:
   # included in the session.
   auth_configs:
     googlecontacts: ""
+
+# TK Family document processing (v1.1.23).
+#
+# The Covey family captures documents in the TK Family app and drops scans in
+# Google Drive. Jack reads each one, renames it, files it, and PROPOSES the
+# task/bill/event rather than creating it. The family approves in the app.
+#
+# Two systems are involved and they are not interchangeable:
+#
+#   TK Family MCP   the document queue, the bill list, the task list, and the
+#                   write-back calls (record_document_reading,
+#                   mark_document_filed). Reached over plain JSON-RPC with an
+#                   x-mcp-token header.
+#   Composio Drive  the actual file work: list a folder, rename a file, move it
+#                   between folders. TK Family's own organize_drive_file matches
+#                   folders by NAME SUBSTRING, and "Bills and Receipts" occurs
+#                   fifteen times in this tree, so it must not be used here.
+#
+# The folder table below is the single source of truth. tkfamily_scan.py reads
+# the inbox ids from it, verify.sh checks it against the live tree, and the
+# tk-family-documents skill renders it for the agent. Jack files BY ID; he never
+# walks the path and never creates a folder.
+tk_family:
+  enabled: true
+  mcp_url: https://oejdjsdzlkerchtdabik.supabase.co/functions/v1/mcp-server
+  token_env: TK_FAMILY_TOKEN
+
+  # Which connected Google account owns Covey Files. VERIFIED 2026-08-09:
+  # taylor@tk-holdings.com is the owner (owners[0].me == true); the personal
+  # account can edit but is not the owner; the Outlaw account cannot read the
+  # root at all. Composio's DEFAULT account is the personal one, so omitting
+  # `account` silently uses a non-owner. Always pass this account id.
+  # Connected-account ids change on reconnect: `jack composio accounts` is
+  # authoritative, this is the last verified value.
+  drive_account: ca_qR21BsRUpXnK
+  drive_account_email: taylor@tk-holdings.com
+
+  # Poll cadence. The cron job ticks every minute per Taylor's spec, but the
+  # scan script is plain HTTP with no model in the loop: when there is nothing
+  # to do it prints {"wakeAgent": false} and the LLM never runs. An idle minute
+  # costs three HTTP calls, not a token.
+  schedule: "* * * * *"
+  cron_job_name: tk-family-docs
+
+  root_folder: 1phyXCIAiQepMflVlmOfLbbtLRrrBhuxt   # Covey Files
+
+  # The three drop zones the scan script watches, alongside the app queue.
+  inboxes:
+    "0 Inbox/Scanner Pro - Auto Upload Here": 1KbDnouO10zshx6CThDaQvRPKaxF4D8uM
+    "0 Inbox/Receipts to File": 10zsxAX7kW3V5SkJTQRgXoROVOlnTo0kP
+    "0 Inbox/Everything Else": 1r-71M0mmU2l8uE2z3bOiNsbUtbZVy7Pn
+
+  # Every filing destination that exists. A path that is not in this table is
+  # not a legal destination: the document stays in 0 Inbox and gets flagged.
+  folders:
+    "0 Inbox": 1fbj3tuz3_rwOEesgJ6qhTqlO_sHDnfTm
+    "0 Inbox/Scanner Pro - Auto Upload Here": 1KbDnouO10zshx6CThDaQvRPKaxF4D8uM
+    "0 Inbox/Receipts to File": 10zsxAX7kW3V5SkJTQRgXoROVOlnTo0kP
+    "0 Inbox/Everything Else": 1r-71M0mmU2l8uE2z3bOiNsbUtbZVy7Pn
+
+    "1 Family/Medical": 1baCKIVMyxP3tbZjsSzECF867oxPF3U8i
+    "1 Family/Medical/Bills and Receipts": 1T88G3CIyXludq_Cxwy2ll-mywVoOvkfk
+    "1 Family/School": 1f4p6Ta5-hBHW1RUIGyq0w7xphtDbibKg
+    "1 Family/School/Bills and Receipts": 1uV6IAR9f3mYTL7l2RBl2AFBEfj4zs1mi
+    "1 Family/Activities": 1CkOll93jYWTP1PohSwQcKRPjh9y9G2Rj
+    "1 Family/Activities/Bills and Receipts": 19J8wxm2sTQDDTCavcTdsQdvCVd6bs5jb
+    "1 Family/Church": 1Iu-nCM68d3-7ee_FdyqA2tztwEe9RuUF
+    "1 Family/IDs and Records": 1eHs4_cTfpC3lm1n8oGZFwdyKKDUR4w6y
+    "1 Family/Travel": 15X1KTRBDK4XJFsNU3-AMhvo5dWH7ahJ9
+    "1 Family/Travel/Bills and Receipts": 1wQb1OeQVrL7U9rlXm1aKOzsiOJ5Hbhgt
+
+    "2 Home/Heber Home": 1MGYJjWBCGhIylism9O_5gSJUBl1oXHD5
+    "2 Home/Heber Home/Bills and Receipts": 1LyAWqHdGxUuoO9A28UsJUf8PNw45zJnO
+    "2 Home/Heber Lot - New Build": 1jaieDStVH1PfihzPnyk-HGezpx9mPY7d
+    "2 Home/Heber Lot - New Build/Bills and Receipts": 1CkScUR-3GGAhQsAHb0XH5_pAGqccA38A
+    "2 Home/Bluffdale Townhome": 1Pg_uMk7ucDG2x-ca3uiWKOPiwDTeabFu
+    "2 Home/Bluffdale Townhome/Bills and Receipts": 1XQdE0FCo7LzyWIgGNdrSBLsHCFlysAcX
+    "2 Home/Daybreak House": 1K9nX6k6gxds6_Qgv4XINvXGBJ208Bevi
+    "2 Home/Daybreak House/Bills and Receipts": 1lQ1H-aXlj51RbpV0mfRw1S0aX0K6Qaaq
+    "2 Home/Vehicles": 1YxmCZxC1WcmJfZN0ZYn1OSEd_4uFoKeP
+    "2 Home/Vehicles/Bills and Receipts": 149jl8ylPENaBDW5yfi3Wwu4_F3MB3yib
+    "2 Home/Utilities": 1homVmjcNhF9nQpvN0mRPHerS2NRfJze8
+    "2 Home/Utilities/Bills and Receipts": 1NYu7YY8r_yPgzsY4V3iRrwSF07cZ8s3J
+
+    "3 Money/Statements": 1GLu9Cb4b4mMBAT8ORKtylECBSSMDvios
+    "3 Money/Taxes/2025": 1fAF3fB5eJWJRSJo3bXfhYS0rSNG9IAck
+    "3 Money/Taxes/2026": 1HhPWVHIFdGFXq5TLhXMZpmmJg1738xZe
+    "3 Money/Insurance": 1sFOSdYKy_pzmml-i1MmWkRN2Nb2FfWRY
+    "3 Money/Insurance/Bills and Receipts": 162Le8154ey9AbOlQ_wg2tmQiWnAOSohm
+    "3 Money/Investments": 1yxed8gAyOrDEsqdSXAUSAXmIaIhRIhVd
+
+    "4 Business/TK Holdings": 1GhJZLWFqgEaOXWyZyC91hUrMz7xCR1I0
+    "4 Business/TK Holdings/Bills and Receipts": 1__CcAF1T7A6p8VtD_MY52CaUY5zJ-wDE
+    "4 Business/Anderson Tax and Consulting": 1XFGKUr5bKiGQD1P8yQjgUwB5uDUckx_P
+    "4 Business/Anderson Tax and Consulting/Bills and Receipts": 1UnWGR61oq3PhCNFeUqt3TRkeL0uhyrcc
+    "4 Business/Outlaw Industrial": 1JZLk4VCBCLvFagB9vBv6wmlIze1RPfXs
+    "4 Business/Outlaw Industrial/Bills and Receipts": 157Eb0jpAsBHz_LyaaYdpv6jRkLVzkA64
+    "4 Business/Gibson": 11yfUqO_SrbiBmvzWX0suAzfMVce9F5-C
+    "4 Business/Gibson/Bills and Receipts": 11gw4NjQabMvmOSwEhxqdCoFAY8LFmVDo
+    "4 Business/Cavazos Bop": 1M14A00t6Rz3DyRIAY6cebQ3ieWuKwHu-
+    "4 Business/Cavazos Bop/Bills and Receipts": 19y3Zg_pPaK4Lc3Ut76ONQFwvDkPtOW-t
+    "4 Business/Signal Advisory": 1eU-61JrCpiLIjuC54XOs8EuAGAXZn3iM
+    "4 Business/Signal Advisory/Bills and Receipts": 1WMSYt1v7tIlikSlHUvJrOXau16iw8EdP
+
+    "9 Archive": 1g5Zz-nqIuC4vhnNq7-QC84OlFaxOaf44
+
+  # Business names as they appear on a document, mapped to the folder they file
+  # into. Check 1 of the routing rules is "does it name one of the businesses",
+  # and a vendor writes "Outlaw Industrial LLC", not "4 Business/Outlaw
+  # Industrial".
+  business_aliases:
+    tk holdings: 4 Business/TK Holdings
+    anderson tax: 4 Business/Anderson Tax and Consulting
+    anderson tax and consulting: 4 Business/Anderson Tax and Consulting
+    anderson tax & consulting: 4 Business/Anderson Tax and Consulting
+    outlaw industrial: 4 Business/Outlaw Industrial
+    outlaw: 4 Business/Outlaw Industrial
+    gibson: 4 Business/Gibson
+    cavazos bop: 4 Business/Cavazos Bop
+    cavazos: 4 Business/Cavazos Bop
+    signal advisory: 4 Business/Signal Advisory
+    signl: 4 Business/Signal Advisory
+    signl advisory: 4 Business/Signal Advisory
+    signl advisors: 4 Business/Signal Advisory
 
 # Implementations that must NOT appear on a Jack deployment. verify.sh checks
 # for each of these; a hit is a critical failure, not an advisory.
