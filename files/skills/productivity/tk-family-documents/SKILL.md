@@ -420,8 +420,25 @@ whatever area it belongs to. The dental bill goes to
 
 **A bill IS a task tagged `Bill`.** There is no separate bills list any more,
 and as of 2026-08-09 the `add_bill` and `list_bills` tools no longer exist. A
-`create_bill` action creates a Bill-tagged task carrying the amount, dated
-**three days before the due date** so there is some runway.
+`create_bill` action creates a Bill-tagged task carrying the amount.
+
+### Dating the task
+
+The point of the date is runway, so it is never in the past. Work out the day
+before you send the action:
+
+- **Due in the future:** three days before the due date.
+  Due September 15 becomes September 12.
+- **Due in the next three days:** today. Two days of runway is better than a
+  task dated yesterday. Due August 11 read on August 9 becomes August 9.
+- **Already overdue:** **today plus three days.** Due July 30 read on August 9
+  becomes August 12. Taylor asked for this directly: a bill that slipped still
+  needs a few days to sort out, and back-dating the task just buries it at the
+  bottom of the list where he will not see it.
+
+Say it plainly in your message when a bill is already late. "This one was due
+July 30, so the task is dated the 12th" is the sentence. Do not quietly
+reschedule a late bill and let him find out later.
 
 **Propose exactly one action for a bill.** One `create_bill`, with the vendor,
 amount, due date and account reference. **Do not also propose a `create_task` to

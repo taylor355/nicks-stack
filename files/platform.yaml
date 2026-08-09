@@ -16,10 +16,22 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.28
+version: 1.1.29
 released: 2026-08-09
 status: frozen
 description: >-
+  v1.1.29 stops a late bill from producing a task dated in the past, and stops
+  proposals from sitting unseen. The runway rule was "three days before the due
+  date", which for a bill that already slipped puts the task behind today and
+  buries it at the bottom of the list. Taylor asked for the fix directly: a bill
+  read after its due date gets a task dated TODAY PLUS THREE, and one due within
+  the next three days gets today rather than a date in the past. Jack says so out
+  loud when a bill is late rather than quietly rescheduling it. Second gap, same
+  silent shape as the others: a review card Jack proposes sits in needs_review
+  until a person acts, and nothing anywhere notices if nobody does. The morning
+  brief now counts them, names any older than three days, and separately flags a
+  Bill-tagged task past its due date, which is the most expensive thing in the
+  list to miss.
   v1.1.28 rebuilds the document skill against a tool surface that moved under
   it. Taylor's version 2 instructions arrived the same night the TK Family
   developer shipped, and the server went from 24 tools to 32. Two of them were
@@ -497,10 +509,10 @@ description: >-
 
 # Component versions. These are what `jack doctor` reports under Versions.
 versions:
-  platform: 1.1.28
-  bootstrap: 1.1.28
-  update: 1.1.28
-  verify: 1.1.28
+  platform: 1.1.29
+  bootstrap: 1.1.29
+  update: 1.1.29
+  verify: 1.1.29
   routing: 1.0.8
   doctor: 1.0.7
   manifest: 1.0.2
