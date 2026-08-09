@@ -334,6 +334,8 @@ secrets:
       COMPOSIO_API_KEY: op://Hermes/Hermes Agent Secrets/COMPOSIO_API_KEY
       X_APP_ONLY_BEARER_TOKEN: op://Hermes/Hermes Agent Secrets/X_APP_ONLY_BEARER_TOKEN
       TK_FAMILY_TOKEN: op://Hermes/Hermes Agent Secrets/TK_FAMILY_TOKEN
+      BLUEBUBBLES_PASSWORD: op://Hermes/Hermes Agent Secrets/BLUEBUBBLES_PASSWORD
+      TAILSCALE_AUTHKEY: op://Hermes/Hermes Agent Secrets/TAILSCALE_AUTHKEY
     binary_path: /usr/bin/op
 _config_version: 33
 session_reset:

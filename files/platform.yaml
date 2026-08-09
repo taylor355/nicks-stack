@@ -16,7 +16,7 @@
 # component changes behaviour. `jack version` reads both.
 # ==========================================================================
 name: Taylor AI Platform
-version: 1.1.33
+version: 1.1.34
 released: 2026-08-09
 status: frozen
 description: >-
@@ -760,7 +760,11 @@ skills:
     - mlops/inference
     - mlops/models
     - smart-home/openhue
-    # No Apple devices on this Linux VM — these can never run here.
+    # These drive macOS apps through AppleScript, which only exists on macOS.
+    # They stay pruned even now that the Mac mini is in the picture (v1.1.34):
+    # the skill would have to RUN on the Mac, and Jack runs here. iMessage is
+    # reached the only way it can be from Linux — over HTTP to a BlueBubbles
+    # server on the Mac. See the mac-bridge skill.
     - apple/apple-notes
     - apple/apple-reminders
     - apple/findmy
@@ -794,6 +798,12 @@ runtime_secrets:
     - env: TK_FAMILY_TOKEN
       required: false
       consumer: tk-family MCP server (x-mcp-token) + tkfamily_scan.py
+    - env: BLUEBUBBLES_PASSWORD
+      required: false
+      consumer: mac_bridge.py (iMessage delivery via the Mac mini)
+    - env: TAILSCALE_AUTHKEY
+      required: false
+      consumer: one-time `tailscale up` to join Taylor's private mesh
 
   # Hermes writes resolved op:// values to a PLAINTEXT json cache when it does
   # its own resolution. The platform never enables that, but a stale file can
@@ -1051,6 +1061,71 @@ tk_family:
     # Kept because a vendor who heard the name over the phone will write it this
     # way, and a misfiled invoice is worse than a redundant alias.
     signal advisory: 4 Business/SIGNL Advisory
+
+# --------------------------------------------------------------------------
+# mac_bridge — Taylor's always-on Mac mini  (v1.1.34)
+# --------------------------------------------------------------------------
+# Three capabilities live on the Mac because they cannot live here:
+#
+#   ollama       Free local inference. The `local` route has been dead since
+#                v1.1.11 for want of CPU (92% steal on this VM), not for want
+#                of configuration. Apple Silicon has real cores.
+#   claude_code  Build work on Taylor's own subscription. A consumer plan is a
+#                browser login on a machine he owns, never an API key.
+#   bluebubbles  iMessage. macOS only; there is no cloud substitute.
+#
+# Reached over TAILSCALE, a private mesh between two machines Taylor owns.
+# Nothing is published to the internet and no home router port is opened.
+#
+# enabled: false until the Mac-side install is done. Every consumer
+# (mac_bridge.py, the mac-bridge skill, verify.sh) treats false as "not set up
+# yet" and says so plainly rather than guessing or half-working.
+mac_bridge:
+  enabled: false
+  host: null                 # Tailscale MagicDNS name, e.g. mac-mini
+  ssh_user: null             # the macOS short username
+  # Minted by bootstrap.sh, no passphrase (this must work from an unattended
+  # cron wake). Only the PUBLIC half leaves the VM — Taylor pastes it into the
+  # Mac's ~/.ssh/authorized_keys. macOS cannot run a Tailscale SSH server, so
+  # the Mac's own sshd does the authentication and Tailscale only supplies the
+  # private address.
+  identity_file: /root/.ssh/jack_mac_ed25519
+  workspace: ~/JackBuilds    # every build gets its own run-<timestamp> subdir
+  build_timeout: 1800        # 30 min; a build that runs longer is stuck
+
+  ollama:
+    port: 11434
+
+  claude_code:
+    binary: claude
+    max_turns: 40
+
+  codex:
+    binary: codex            # backup lane when the Claude plan limit is hit
+
+  bluebubbles:
+    scheme: http             # plain http is fine INSIDE the Tailscale mesh
+    port: 1234
+    recipient: null          # Taylor's iMessage handle, e.g. +15555550123
+    daily_cap: 6             # "not everything, a few things" — enforced, not advised
+    max_chars: 1200          # longer than this belongs on Telegram
+
+  # WHICH surface gets what. The script enforces the cap; the mac-bridge skill
+  # enforces this list. Telegram stays the conversation; iMessage is a
+  # one-way notice channel for things worth interrupting a day for.
+  text_policy:
+    allowed:
+      - the morning brief, trimmed to what changed
+      - a bill or filing due today that nobody has actioned
+      - a calendar conflict inside the next two hours
+      - a finished build that Taylor asked for by text
+      - anything Taylor explicitly said "text me" about
+    denied:
+      - tool progress, job status, or "working on it"
+      - anything already sent on Telegram in the same hour
+      - McKell's household items                      # his rule, stated twice
+      - errors and warnings                            # Telegram, or stay quiet
+      - anything longer than max_chars
 
 # Implementations that must NOT appear on a Jack deployment. verify.sh checks
 # for each of these; a hit is a critical failure, not an advisory.

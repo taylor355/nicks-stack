@@ -33,7 +33,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 readonly SCRIPT_NAME="Taylor AI Platform verify"
-readonly SCRIPT_VERSION="1.1.33"
+readonly SCRIPT_VERSION="1.1.34"
 
 # Paths — identical to platform/bootstrap.sh.
 readonly HERMES_HOME="/root/.hermes"
@@ -1188,6 +1188,64 @@ for e in json.load(sys.stdin).get('entries',[]):
   fi
 else
   warn "memory_check.py not installed — nothing watches the silent truncation cap"
+fi
+
+# ==========================================================================
+section "8e. Mac mini bridge (v1.1.34)"
+# ==========================================================================
+# Ollama, Claude Code and iMessage all live on Taylor's Mac mini because none
+# of them can work here: this VM has no spare CPU, must never hold a consumer
+# subscription's credential, and is not a Mac. This section checks the VM side
+# only — it never dials the Mac, because verify.sh must stay offline-safe and
+# a sleeping Mac is not a broken deployment. `mac_bridge.py status` is the
+# thing that proves the far end, and it does it with live calls.
+MACBR="$HERMES_HOME/scripts/platform/mac_bridge.py"
+if [[ -f "$MACBR" ]]; then
+  pass "mac_bridge.py is installed"
+  if python3 "$MACBR" --help >/dev/null 2>&1; then
+    pass "mac_bridge.py parses and exposes its CLI"
+  else
+    fail "mac_bridge.py does not run — the Mac lanes are all dead"
+  fi
+else
+  warn "mac_bridge.py not installed — no build handoff, no local tier, no iMessage"
+fi
+
+MAC_ENABLED="$(python3 - <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, "/root/.hermes/scripts/platform")
+try:
+    import lib
+    mb = lib.load_yaml(lib.PLATFORM_FILE).get("mac_bridge") or {}
+    print("yes" if mb.get("enabled") else "no")
+    print(mb.get("host") or "")
+except Exception:
+    print("err"); print("")
+PY
+)"
+MAC_ON="$(printf '%s' "$MAC_ENABLED" | sed -n 1p)"
+MAC_HOST="$(printf '%s' "$MAC_ENABLED" | sed -n 2p)"
+
+if [[ "$MAC_ON" == "yes" ]]; then
+  if [[ -n "$MAC_HOST" ]]; then
+    pass "mac_bridge is enabled and points at '$MAC_HOST'"
+  else
+    fail "mac_bridge is enabled but has no host — every lane will fail at connect"
+  fi
+  if [[ -f /root/.ssh/jack_mac_ed25519 ]]; then
+    pass "Mac bridge SSH identity present"
+  else
+    fail "mac_bridge is enabled but /root/.ssh/jack_mac_ed25519 is missing"
+  fi
+  if have tailscale && tailscale status >/dev/null 2>&1; then
+    pass "tailscaled is up and joined to a tailnet"
+  else
+    warn "mac_bridge is enabled but this VM is not on the tailnet — run: tailscale up"
+  fi
+elif [[ "$MAC_ON" == "no" ]]; then
+  info "mac_bridge is off — the Mac-side install has not been done yet"
+else
+  warn "mac_bridge configuration could not be read from platform.yaml"
 fi
 
 # ==========================================================================

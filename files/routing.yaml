@@ -130,26 +130,36 @@ modes:
 
   build:
     execution: specialist-cli
+    host: mac-mini                 # see platform.yaml -> mac_bridge (v1.1.34)
+    bridge: python3 /root/.hermes/scripts/platform/mac_bridge.py
     specialists:
       - name: claude-code
         binary: claude
-        auth_check: claude auth status
-        invoke: claude -p '<task>' --max-turns <N>
+        auth_check: mac_bridge.py status          # a live one-turn prompt, not a readout
+        invoke: mac_bridge.py build '<task>' --confirm
         preferred: true
       - name: codex
         binary: codex
-        auth_check: codex login status
-        invoke: codex exec '<task>'
+        auth_check: mac_bridge.py status
+        invoke: mac_bridge.py build '<task>' --confirm --specialist codex
         preferred: false
     requires_approval: true
     fallback: null
-    summary: Software engineering and repository changes.
+    summary: Documents, PDFs, HTML, spreadsheets, scripts and repository changes.
     why: >-
       Claude Code and Codex are locally authenticated CLI execution
       environments, not API providers — a consumer subscription must never be
-      driven through an API key. Hermes stays the conductor and reviews the
-      diff. See the coding-agent-routing skill for the full policy; this router
-      only reports which specialist is available and never runs one itself.
+      driven through an API key. That is exactly why build work runs on
+      Taylor's Mac mini, where the login lives: the flat-rate plan absorbs the
+      tokens instead of the metered API, and no credential ever leaves his
+      machine. Hermes stays the conductor, fetches the artifact back and
+      delivers it on Telegram. Codex is the backup lane when the Claude plan
+      limit is hit. See the mac-bridge and coding-agent-routing skills.
+    # AUTH LIVES ON THE MAC, NOT HERE (v1.1.34).
+    # Claude Code is installed on this VM but deliberately unused for `build`:
+    # authenticating it here would mean minting a token for a consumer
+    # subscription on a cloud VM, which is the thing the policy above forbids.
+    # `claude` on this VM stays available for local one-off inspection only.
 
   local:
     execution: ollama
@@ -157,12 +167,21 @@ modes:
     model: null                # resolved at run time from installed models
     key_env: null              # local daemon, no credential
     fallback: null
-    summary: Local Ollama — private, free, no data leaves the machine.
+    # WHERE the daemon is. null means "this VM", which is the configuration
+    # that has never worked (see the CPU note below). Set this to the Mac
+    # mini's Tailscale name and the mode comes alive with no other change:
+    #   host: mac-mini
+    # platform.yaml -> mac_bridge is the single place that name is configured;
+    # `python3 mac_bridge.py models` reports what the Mac can actually run.
+    host: null
+    port: 11434
+    fallback_when_host_down: null   # never silently reroute free work to a paid tier
+    summary: Local Ollama — private, free, no data leaves machines Taylor owns.
     why: >-
-      Routes to the Ollama daemon on this machine. The model is whichever one
-      is pulled locally (discovered from /api/tags), so nothing is assumed. If
-      the daemon is down or no model is pulled, this mode fails cleanly with
-      "not installed/configured" and never falls back to a paid route.
+      Routes to an Ollama daemon. The model is whichever one is pulled there
+      (discovered from /api/tags), so nothing is assumed. If the daemon is down
+      or no model is pulled, this mode fails cleanly with "not
+      installed/configured" and never falls back to a paid route.
     # BLOCKED ON HOST CPU, NOT ON CONFIGURATION (v1.1.11).
     #
     # This mode does not work on the current VM, and no setting here will fix
@@ -182,10 +201,21 @@ modes:
     # `nicks-stack-provider-doctor` now measures steal on any local inference
     # failure and says so, instead of reporting a bare "HTTP 0 timed out".
     #
-    # To actually enable local: move to a VM with dedicated CPU, then
-    #   ollama pull qwen3:1.7b   (already pulled here)
-    #   jack doctor --providers  (must show Ollama inference ok)
-    # Nothing in this file needs to change.
+    # THE FIX IS A DIFFERENT MACHINE, NOT A BIGGER VM (v1.1.34).
+    # Taylor has an always-on Mac mini. Apple Silicon has real cores and a
+    # unified-memory GPU, so a 7-8B model answers in seconds there. Point
+    # `host` above at its Tailscale name and this mode works:
+    #   on the Mac:  ollama pull qwen3:8b
+    #                launchctl setenv OLLAMA_HOST 0.0.0.0   (bind beyond loopback)
+    #   here:        routing.yaml -> modes.local.host: mac-mini
+    #                python3 mac_bridge.py models   (must list a chat model)
+    #
+    # WHAT LOCAL IS AND IS NOT WORTH. It is free and private, and that is the
+    # whole case for it. An 8B model is not close to Sonnet on the judgement
+    # work Jack actually does, so `local` stays a MANUAL mode: good for bulk
+    # classification, redaction, summarising something Taylor would rather not
+    # send to a vendor, and for keeping working when an API is down. Nothing
+    # escalates into it and nothing is automatically demoted to it.
 
 # --------------------------------------------------------------------------
 # Providers — what `nicks-stack-provider-doctor` validates end to end.

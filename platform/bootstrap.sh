@@ -1320,6 +1320,36 @@ SUPERVISOROLLAMA
     info "supervisor conf omits ollama (not requested, not installed)"
   fi
 
+  # tailscaled — the private link to Taylor's Mac mini (v1.1.34).
+  # This host has no systemd, so the package's own unit never runs and the
+  # daemon has to be supervised like everything else. Written only when the
+  # binary is present; joining a tailnet is a separate, credentialed step
+  # (`tailscale up`), so a daemon with no tailnet just idles harmlessly.
+  if have tailscaled; then
+    cat >> "$SUPERVISOR_TMP" <<'SUPERVISORTAILSCALE'
+
+[program:tailscaled]
+command=/usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641
+directory=/root
+user=root
+autostart=true
+autorestart=true
+startsecs=10
+startretries=999
+stopasgroup=true
+killasgroup=true
+stopwaitsecs=30
+environment=HOME="/root",USER="root"
+stdout_logfile=/var/log/orgo/tailscaled.out.log
+stderr_logfile=/var/log/orgo/tailscaled.err.log
+stdout_logfile_maxbytes=10MB
+stderr_logfile_maxbytes=10MB
+SUPERVISORTAILSCALE
+    info "supervisor conf includes tailscaled (Mac mini bridge)"
+  else
+    info "supervisor conf omits tailscaled (not installed)"
+  fi
+
   install_managed "$SUPERVISOR_TMP" "$STACK_CONF" 0644
   rm -f "$SUPERVISOR_TMP"
 fi
@@ -1344,6 +1374,27 @@ elif have supervisord; then
   supervisorctl update >/dev/null 2>&1 || true
 else
   warn "no supervisord on this host — services are configured at $STACK_CONF but nothing is supervising them"
+fi
+
+# Mac mini bridge identity (v1.1.34). Only the PUBLIC half ever leaves this
+# machine — Taylor pastes it into the Mac's authorized_keys. No passphrase,
+# because the bridge has to work from an unattended cron wake; the private key
+# is 0600 in root's home on a VM only Taylor can reach. Idempotent: an existing
+# key is never regenerated, because that would silently break an already
+# authorised Mac.
+MAC_KEY="/root/.ssh/jack_mac_ed25519"
+if [[ -f "$MAC_KEY" ]]; then
+  info "Mac bridge SSH identity already present"
+elif have ssh-keygen; then
+  mkdir -p /root/.ssh && chmod 700 /root/.ssh
+  if ssh-keygen -t ed25519 -N '' -C 'jack-55@orgo-vm' -f "$MAC_KEY" >/dev/null 2>&1; then
+    chmod 600 "$MAC_KEY"
+    ok "minted Mac bridge SSH identity — public half: $MAC_KEY.pub"
+  else
+    warn "could not mint the Mac bridge SSH identity"
+  fi
+else
+  info "ssh-keygen not available — Mac bridge identity skipped"
 fi
 
 # ==========================================================================
