@@ -1082,8 +1082,16 @@ tk_family:
 # yet" and says so plainly rather than guessing or half-working.
 mac_bridge:
   enabled: false
-  host: null                 # Tailscale MagicDNS name, e.g. mac-mini
-  ssh_user: null             # the macOS short username
+  host: jackcoveys-mac-mini  # Tailscale MagicDNS name (tailnet taileba6a8.ts.net)
+  ssh_user: jackcovey        # the macOS short username
+  # This VM's container has no /dev/net/tun, so tailscaled runs in userspace
+  # networking mode: there is no tailscale0 interface and no kernel route, and
+  # every outbound connection goes through the local listeners the daemon
+  # provides. `tailscale nc` needs no extra tools; the HTTP proxy is what makes
+  # Ollama and BlueBubbles reachable. Set either to "" only on a host with a
+  # real TUN device.
+  ssh_proxy_command: tailscale nc %h %p
+  http_proxy: http://127.0.0.1:1056
   # Minted by bootstrap.sh, no passphrase (this must work from an unattended
   # cron wake). Only the PUBLIC half leaves the VM — Taylor pastes it into the
   # Mac's ~/.ssh/authorized_keys. macOS cannot run a Tailscale SSH server, so

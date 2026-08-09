@@ -130,11 +130,11 @@ the paid tiers, and Jack will never quietly demote your work into it.
 This is the one that saves you money. Build work runs here on your flat-rate
 plan instead of being billed per token through the API.
 
-```bash
-curl -fsSL https://claude.ai/install.sh | bash
-```
+**Claude Code is already installed** at `~/.local/bin/claude` (v2.1.220), so
+skip the install. It is just not signed in — the headless probe answers
+"Not logged in - Please run /login".
 
-Then start it and sign in:
+Start it and sign in:
 
 ```bash
 claude
@@ -162,15 +162,9 @@ If that prints `BRIDGE-OK`, the lane is live.
 
 ## Step 5 — Codex, the backup lane
 
-Only needed so that a Claude usage limit doesn't stop you.
-
-```bash
-npm install -g @openai/codex && codex login
-```
-
-If you don't have Node, install it first with `brew install node`. If you'd
-rather skip Codex for now, skip it — Jack will just report the Claude limit
-and offer to do the work on the API instead.
+**Already done.** Codex CLI 0.146.0 is installed and signed in, and it has
+already run a real build through this bridge — it produced an HTML file on the
+Mac which was fetched back to the VM. Nothing for you to do here.
 
 ---
 

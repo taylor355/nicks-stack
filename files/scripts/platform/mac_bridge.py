@@ -60,7 +60,9 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -81,18 +83,69 @@ BASE_SSH_OPTS = [
 DEFAULT_IDENTITY = "/root/.ssh/jack_mac_ed25519"
 
 
+# USERSPACE NETWORKING, NOT A CHOICE (v1.1.34).
+# This VM's container has no /dev/net/tun and cannot modprobe it, so tailscaled
+# runs with --tun=userspace-networking. That mode has no tailscale0 interface
+# and no kernel route: the VM cannot simply "connect to 100.86.x.x". Everything
+# outbound goes through the two local listeners tailscaled provides instead —
+# a SOCKS5 proxy for ssh (reached with `tailscale nc`, which needs no extra
+# tools) and an HTTP proxy for Ollama and BlueBubbles.
+#
+# This is a supported Tailscale mode, not a workaround, and it is exactly what
+# Tailscale documents for containers. What it costs: the VM is reachable-FROM
+# nothing (it can dial the Mac, the Mac cannot dial it), which is the direction
+# this bridge needs anyway.
+DEFAULT_PROXY_COMMAND = "tailscale nc %h %p"
+DEFAULT_HTTP_PROXY = "http://127.0.0.1:1056"
+
+
 def ssh_opts(cfg: dict) -> list[str]:
     identity = cfg.get("identity_file") or DEFAULT_IDENTITY
     opts = list(BASE_SSH_OPTS)
     if Path(identity).is_file():
         opts += ["-i", identity, "-o", "IdentitiesOnly=yes"]
+    proxy = cfg.get("ssh_proxy_command")
+    if proxy:
+        opts += ["-o", f"ProxyCommand={proxy}"]
     return opts
+
+
+def proxied_json(cfg: dict, url: str, payload: dict | None = None,
+                 timeout: int = 15) -> tuple[int, dict | None, str]:
+    """lib.http_json with the tailnet HTTP proxy applied to THIS call only.
+
+    Deliberately not done with HTTP_PROXY environment variables: this VM
+    already has an outbound agent proxy configured that way, and hijacking it
+    globally would break every other network call the platform makes."""
+    proxy = cfg.get("http_proxy") or ""
+    if not proxy:
+        return lib.http_json(url, payload=payload, timeout=timeout)
+
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read().decode(errors="replace")
+            try:
+                return resp.status, json.loads(body), ""
+            except ValueError:
+                return resp.status, None, body[:400]
+    except urllib.error.HTTPError as exc:
+        return exc.code, None, exc.read().decode(errors="replace")[:400]
+    except Exception as exc:  # noqa: BLE001 - every transport failure is "down"
+        return 0, None, str(exc)
 
 
 DEFAULTS = {
     "host": None,
     "ssh_user": None,
     "identity_file": DEFAULT_IDENTITY,
+    "ssh_proxy_command": DEFAULT_PROXY_COMMAND,
+    "http_proxy": DEFAULT_HTTP_PROXY,
     "workspace": "~/JackBuilds",
     "ollama_port": 11434,
     "claude_binary": "claude",
@@ -133,6 +186,11 @@ def config() -> dict:
         "host": raw.get("host") or DEFAULTS["host"],
         "ssh_user": raw.get("ssh_user") or DEFAULTS["ssh_user"],
         "identity_file": raw.get("identity_file") or DEFAULTS["identity_file"],
+        "ssh_proxy_command": (DEFAULTS["ssh_proxy_command"]
+                              if raw.get("ssh_proxy_command") is None
+                              else raw.get("ssh_proxy_command")),
+        "http_proxy": (DEFAULTS["http_proxy"] if raw.get("http_proxy") is None
+                       else raw.get("http_proxy")),
         "workspace": shell_path(raw.get("workspace") or DEFAULTS["workspace"]),
         "ollama_port": int(ol.get("port") or DEFAULTS["ollama_port"]),
         "claude_binary": cc.get("binary") or DEFAULTS["claude_binary"],
@@ -201,9 +259,19 @@ def ssh(cfg: dict, remote_cmd: str, timeout: int = 45) -> tuple[int, str, str]:
 
 
 def remote_script(body: str) -> str:
-    """Ship a shell body base64-encoded so quoting can never bite."""
+    """Ship a shell body base64-encoded so quoting can never bite.
+
+    The script is written to a temp file and run with stdin CLOSED, rather
+    than piped into `bash -s`. That is not fussiness: with `| bash -s`, the
+    shell's stdin IS the pipe carrying the rest of the script, so the first
+    child process that reads stdin swallows it. Codex does exactly that — its
+    first live run printed "Reading additional input from stdin..." and ate
+    the artifact-listing half of its own wrapper, which then came back as
+    shell fragments in the artifact list. `claude -p` reads stdin too. Closing
+    it is the fix for both."""
     blob = base64.b64encode(body.encode()).decode()
-    return f"echo {blob} | base64 -d | bash -s"
+    return (f'f=$(mktemp); echo {blob} | base64 -d > "$f"; '
+            f'bash "$f" < /dev/null; rc=$?; rm -f "$f"; exit $rc')
 
 
 # --------------------------------------------------------------------------
@@ -226,7 +294,7 @@ def check_reachable(cfg: dict) -> dict:
 
 def check_ollama(cfg: dict) -> dict:
     url = f"http://{cfg['host']}:{cfg['ollama_port']}/api/tags"
-    status, body, err = lib.http_json(url, timeout=10)
+    status, body, err = proxied_json(cfg, url, timeout=10)
     if status != 200 or not isinstance(body, dict):
         return {"ok": False, "detail": lib.scrub(err or f"HTTP {status}")[:160],
                 "hint": "on the Mac: launchctl setenv OLLAMA_HOST 0.0.0.0 then restart Ollama"}
@@ -246,7 +314,12 @@ def check_specialist(cfg: dict, which: str) -> dict:
         probe = (f'{binary} -p "Reply with exactly: BRIDGE-OK" '
                  f'--max-turns 1 --output-format text 2>&1 | tail -5')
     else:
-        probe = f'{binary} exec "Reply with exactly: BRIDGE-OK" 2>&1 | tail -5'
+        # --skip-git-repo-check: the build workspace is a plain directory, not
+        # a repo, and Codex refuses to run outside a "trusted directory"
+        # without this. Found by the first live probe, which failed on the
+        # trust check before it ever reached the auth question.
+        probe = (f'{binary} exec --skip-git-repo-check "Reply with exactly: BRIDGE-OK" '
+                 f'2>&1 | tail -5')
     rc, out, err = ssh(cfg, remote_script(
         f'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"\n'
         f'command -v {binary} >/dev/null 2>&1 || {{ echo "NOT-INSTALLED"; exit 0; }}\n'
@@ -285,7 +358,8 @@ def check_bluebubbles(cfg: dict) -> dict:
     if not cfg["recipient"]:
         return {"ok": False, "detail": "no recipient configured",
                 "hint": "set platform.yaml -> mac_bridge.bluebubbles.recipient"}
-    status, body, err = lib.http_json(bb_url(cfg, "/api/v1/server/info", password), timeout=10)
+    status, body, err = proxied_json(cfg, bb_url(cfg, "/api/v1/server/info", password),
+                                     timeout=10)
     if status != 200:
         return {"ok": False, "detail": lib.scrub(err or f"HTTP {status}")[:160],
                 "hint": "is the BlueBubbles server running on the Mac?"}
@@ -384,8 +458,8 @@ def cmd_text(args) -> int:
         "method": "apple-script",
         "tempGuid": f"jack-{int(time.time() * 1000)}",
     }
-    status, body, err = lib.http_json(
-        bb_url(cfg, "/api/v1/message/text", password), payload=payload, timeout=45)
+    status, body, err = proxied_json(
+        cfg, bb_url(cfg, "/api/v1/message/text", password), payload=payload, timeout=45)
     if status not in (200, 201):
         print(f"iMessage send failed: {lib.scrub(err or f'HTTP {status}')[:200]}", file=sys.stderr)
         return 2
@@ -421,7 +495,12 @@ INVOKE = {
     "claude-code": ('{binary} -p "$(cat TASK.md)" --max-turns {max_turns} '
                     '--permission-mode acceptEdits --output-format text '
                     '> RESULT.log 2>&1 || true; tail -40 RESULT.log'),
-    "codex": ('{binary} exec "$(cat TASK.md)" > RESULT.log 2>&1 || true; tail -40 RESULT.log'),
+    # --sandbox workspace-write: Codex defaults to a READ-ONLY sandbox, so its
+    # first live build politely reported that it could not create the file it
+    # had been asked for and exited 0. workspace-write confines it to the run
+    # directory, which is the whole point of giving each build its own.
+    "codex": ('{binary} exec --skip-git-repo-check --sandbox workspace-write '
+              '"$(cat TASK.md)" > RESULT.log 2>&1 || true; tail -40 RESULT.log'),
 }
 
 
