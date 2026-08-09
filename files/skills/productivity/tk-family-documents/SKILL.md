@@ -88,10 +88,25 @@ still file it. Emptying the drop zone is the job. Skip
 Taylor that the file was filed but has no card in the app. Do not invent a
 document id and do not leave the file sitting there.
 
-### And if that document needed a task or a bill
+### First: check whether the ingest tool exists yet
 
-This is the one real hole in the flow, so handle it deliberately rather than
-picking a side.
+Taylor has asked the TK Family developer for a tool that turns a Drive file into
+a document record, most likely called `create_document_from_drive_file`. **Look
+for it in your tool list before doing anything else in this section.**
+
+If it is there, the hole below is closed and this is the whole flow:
+
+1. Call it with the Drive file id, the current file name and the folder path.
+2. It returns a `document_id`.
+3. From there proceed exactly as you would for an app capture:
+   `record_document_reading` with your reading and any proposed task or bill in
+   `actions`, then file the file, then `mark_document_filed`.
+
+That is the good path. Taylor scans into Drive, gets a review card, and approves,
+edits or declines in the app like everything else. Prefer it over what follows
+whenever the tool is available, and stop reading the rest of this section.
+
+### If it does not exist yet: the hole, handled deliberately
 
 An app-captured document gets a review card, which is where a proposed task or
 bill is approved. A file dropped straight into Drive has no card, so there is
