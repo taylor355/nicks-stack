@@ -1123,10 +1123,25 @@ mac_bridge:
   codex:
     binary: codex            # backup lane when the Claude plan limit is hit
 
+  # DELIVERY IS APPLESCRIPT, NOT BLUEBUBBLES (v1.1.34).
+  # Taylor asked for one-way delivery of a few things a day and for it to be
+  # bulletproof. BlueBubbles exists to expose the WHOLE message history over
+  # HTTP: a server app, Full Disk Access to chat.db, a password to rotate, and
+  # one more thing that quits after a macOS update. AppleScript through the
+  # GUI-session runner needs none of it. Fewer parts is the definition of
+  # bulletproof here, and the only thing given up is receiving — which
+  # Telegram already does.
+  imessage:
+    method: applescript
+    recipient: "+13852225570"
+    daily_cap: 6             # "not everything, a few things" — enforced, not advised
+    max_chars: 1200          # longer than this belongs on Telegram
+
+  # Kept for the optional server path. Unused while method is applescript.
   bluebubbles:
-    scheme: http             # plain http is fine INSIDE the Tailscale mesh
+    scheme: http
     port: 1234
-    recipient: null          # Taylor's iMessage handle, e.g. +15555550123
+    recipient: null
     daily_cap: 6             # "not everything, a few things" — enforced, not advised
     max_chars: 1200          # longer than this belongs on Telegram
 

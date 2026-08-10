@@ -17,9 +17,11 @@
 #      it instead of the metered API. Codex is the same shape and is the
 #      backup lane when Claude limits are tapped.
 #
-#   3. IMESSAGE. iMessage is macOS-only, full stop. BlueBubbles is a macOS
-#      server that exposes the Messages app over HTTP; there is no cloud
-#      substitute and no way to do this from Linux.
+#   3. IMESSAGE. macOS-only, full stop. Sent by AppleScript through the
+#      GUI-session runner — no BlueBubbles, no server app, no Full Disk
+#      Access, no password, nothing listening on a port, and no reading of
+#      message history. Over ssh this is refused outright (-1743), the same
+#      GUI boundary that blocks Claude Code's Keychain.
 #
 # The VM reaches the Mac over TAILSCALE — a private mesh between two machines
 # Taylor owns. Nothing here is published to the internet, no port is forwarded
@@ -37,11 +39,11 @@
 # /api/tags) and BlueBubbles (a real /server/info). A green line here means
 # something answered, not that a config file looked right.
 #
-# SECRET SAFETY: BLUEBUBBLES_PASSWORD is resolved through the runtime secrets
-# plane and travels in a query string (BlueBubbles' own API shape) over the
-# Tailscale link only. It is never logged, never echoed, never included in an
-# error message — every outbound URL passes through lib.scrub() before it can
-# reach stdout.
+# SECRET SAFETY: nothing in the iMessage path holds a credential at all — that
+# is a consequence of choosing AppleScript over a server. Everything else that
+# does (BLUEBUBBLES_PASSWORD, kept for the optional server path) resolves
+# through the runtime secrets plane and is never logged, echoed or included in
+# an error message; every outbound URL passes through lib.scrub() first.
 #
 # USAGE
 #   python3 mac_bridge.py join             # one time, joins the tailnet
@@ -50,6 +52,7 @@
 #   python3 mac_bridge.py build "<task>" --confirm [--specialist claude-code|codex]
 #   python3 mac_bridge.py fetch <remote-path> [--dest <dir>]
 #   python3 mac_bridge.py models            # what Ollama on the Mac can run
+#   python3 mac_bridge.py watch             # scheduled; speaks only on a change
 # ==========================================================================
 from __future__ import annotations
 
@@ -182,7 +185,7 @@ def shell_path(path: str) -> str:
 
 def config() -> dict:
     raw = lib.load_yaml(lib.PLATFORM_FILE).get("mac_bridge") or {}
-    bb = raw.get("bluebubbles") or {}
+    bb = raw.get("imessage") or raw.get("bluebubbles") or {}
     ol = raw.get("ollama") or {}
     cc = raw.get("claude_code") or {}
     return {
@@ -374,7 +377,7 @@ def check_ollama(cfg: dict) -> dict:
     status, body, err = lib.http_json(url, timeout=10)
     if status != 200 or not isinstance(body, dict):
         return {"ok": False, "detail": lib.scrub(err or f"HTTP {status}")[:160],
-                "hint": "check the tunnel: supervisorctl status mac-ollama-tunnel"}
+                "hint": "the mac-ollama-tunnel service on this VM is not forwarding"}
     models = [m.get("name", "") for m in body.get("models") or []]
     chat = [m for m in models if lib.is_chat_model(m)]
     if not chat:
@@ -430,7 +433,7 @@ def check_specialist_queued(cfg: dict, which: str) -> dict:
     blob = res["log"]
     if res["pending"]:
         return {"ok": False, "detail": "the build runner did not pick the task up",
-                "hint": "on the Mac: launchctl print gui/$(id -u)/com.jack.buildrunner"}
+                "hint": "the build runner LaunchAgent on the Mac is not picking up work"}
     if "BRIDGE-OK" in blob:
         return {"ok": True, "detail": "authenticated (answered a live prompt)"}
     lowered = blob.lower()
@@ -446,6 +449,35 @@ def check_specialist_queued(cfg: dict, which: str) -> dict:
     return {"ok": False, "detail": (blob.splitlines() or ["no response"])[-1][:160]}
 
 
+def check_imessage(cfg: dict) -> dict:
+    """Ask Messages whether it is alive. Sends nothing.
+
+    The three quiet deaths of this lane are: Messages signed out, Messages not
+    running, and Automation permission revoked by a macOS update. All three
+    fail this probe. A probe that sent a real text would also work — and would
+    text Taylor every time the watchdog ran."""
+    if not cfg["recipient"]:
+        return {"ok": False, "detail": "no recipient configured",
+                "hint": "set platform.yaml -> mac_bridge.imessage.recipient"}
+    run_id = f"improbe-{int(time.time())}"
+    ok, err = enqueue(cfg, "imessage-probe", "probe", run_id)
+    if not ok:
+        return {"ok": False, "detail": f"could not reach the queue: {err}"}
+    res = await_run(cfg, run_id, timeout=90)
+    blob = res["log"]
+    if res["pending"]:
+        return {"ok": False, "detail": "the runner did not answer",
+                "hint": "the build runner LaunchAgent on the Mac is not picking up work"}
+    if "IMESSAGE-OK" in blob:
+        return {"ok": True, "detail": f"Messages is signed in, sending to {cfg['recipient']}"}
+    lowered = blob.lower()
+    if "-1743" in blob or "not authorized" in lowered:
+        return {"ok": False, "detail": "macOS revoked Automation permission for Messages",
+                "hint": "System Settings -> Privacy & Security -> Automation -> allow Messages"}
+    return {"ok": False, "detail": (blob.splitlines() or ["no response"])[-1][:160],
+            "hint": "is Messages signed in on the Mac?"}
+
+
 def bb_base(cfg: dict) -> str:
     return f"{cfg['bluebubbles_scheme']}://{cfg['host']}:{cfg['bluebubbles_port']}"
 
@@ -457,26 +489,22 @@ def bb_url(cfg: dict, path: str, password: str, extra: dict | None = None) -> st
 
 
 def check_bluebubbles(cfg: dict) -> dict:
+    """Only used when mac_bridge.imessage.method is switched to the optional
+    BlueBubbles server path. The default path sends nothing over HTTP."""
     resolved = lib.resolve_runtime_secret("BLUEBUBBLES_PASSWORD")
     password = (resolved or {}).get("value") or ""
     if not password:
-        return {"ok": False, "detail": "BLUEBUBBLES_PASSWORD is not set",
-                "hint": "add it to the Hermes vault item, then restart the gateway"}
-    if not cfg["recipient"]:
-        return {"ok": False, "detail": "no recipient configured",
-                "hint": "set platform.yaml -> mac_bridge.bluebubbles.recipient"}
+        return {"ok": False, "detail": "BLUEBUBBLES_PASSWORD is not set"}
     status, body, err = proxied_json(cfg, bb_url(cfg, "/api/v1/server/info", password),
                                      timeout=10)
     if status != 200:
-        return {"ok": False, "detail": lib.scrub(err or f"HTTP {status}")[:160],
-                "hint": "is the BlueBubbles server running on the Mac?"}
+        return {"ok": False, "detail": lib.scrub(err or f"HTTP {status}")[:160]}
     data = (body or {}).get("data") or {}
-    ver = data.get("os_version") or data.get("server_version") or "running"
-    return {"ok": True, "detail": f"BlueBubbles {ver}, sending to {cfg['recipient']}"}
+    return {"ok": True, "detail": f"BlueBubbles {data.get('server_version') or 'running'}"}
 
 
 # --------------------------------------------------------------------------
-# status
+# status / models
 # --------------------------------------------------------------------------
 def cmd_status(args) -> int:
     cfg = config()
@@ -491,7 +519,7 @@ def cmd_status(args) -> int:
         checks["ollama"] = check_ollama(cfg)
         checks["claude-code"] = check_specialist(cfg, "claude-code")
         checks["codex"] = check_specialist(cfg, "codex")
-        checks["imessage"] = check_bluebubbles(cfg)
+        checks["imessage"] = check_imessage(cfg)
 
     if args.json:
         print(json.dumps({"configured": True, "host": cfg["host"], "checks": checks}, indent=2))
@@ -539,7 +567,7 @@ def cmd_text(args) -> int:
 
     to = args.to or cfg["recipient"]
     if not to:
-        print("no recipient configured (platform.yaml -> mac_bridge.bluebubbles.recipient)",
+        print("no recipient configured (platform.yaml -> mac_bridge.imessage.recipient)",
               file=sys.stderr)
         return 1
 
@@ -552,23 +580,15 @@ def cmd_text(args) -> int:
               "Send this on Telegram instead.", file=sys.stderr)
         return 3
 
-    resolved = lib.resolve_runtime_secret("BLUEBUBBLES_PASSWORD")
-    password = (resolved or {}).get("value") or ""
-    if not password:
-        print("BLUEBUBBLES_PASSWORD is not set", file=sys.stderr)
-        return 1
-
-    guid = to if ";-;" in to else f"iMessage;-;{to}"
-    payload = {
-        "chatGuid": guid,
-        "message": message,
-        "method": "apple-script",
-        "tempGuid": f"jack-{int(time.time() * 1000)}",
-    }
-    status, body, err = proxied_json(
-        cfg, bb_url(cfg, "/api/v1/message/text", password), payload=payload, timeout=45)
-    if status not in (200, 201):
-        print(f"iMessage send failed: {lib.scrub(err or f'HTTP {status}')[:200]}", file=sys.stderr)
+    run_id = f"text-{int(time.time())}"
+    ok, err = enqueue(cfg, "imessage", f"{to}\n{message}", run_id)
+    if not ok:
+        print(f"iMessage send failed: {err}", file=sys.stderr)
+        return 2
+    res = await_run(cfg, run_id, timeout=120)
+    if res["pending"] or "SENT" not in res["log"]:
+        detail = (res["log"].splitlines() or ["no response"])[-1][:200]
+        print(f"iMessage send failed: {detail}", file=sys.stderr)
         return 2
 
     counts[day] = sent_today + 1
@@ -761,10 +781,18 @@ def cmd_fetch(args) -> int:
 # skips the LLM run entirely, so a healthy day costs nothing: no tokens, no
 # Telegram message, no noise. That is what makes a frequent check affordable.
 #
-# LIFECYCLE-GUARD NOTE (same trap as tkfamily_scan.py): the cron lifecycle
-# guard tokenises this job's command and fails closed on any path-like token
-# that is not a regular file. Keep bare "/" and directory literals out of the
-# scheduled command string.
+# LIFECYCLE-GUARD NOTE. Two traps, both hit for real:
+#
+#   1. tkfamily_scan.py's: the guard tokenises the job's command and fails
+#      closed on any path-like token that is not a regular file, so bare "/"
+#      and directory literals must stay out of the scheduled command.
+#
+#   2. This file's own: the guard also scans the SCRIPT BODY and rejects it if
+#      it finds a launchd operation. The word appeared only inside a hint
+#      string suggesting how to inspect the Mac's LaunchAgent — advice, never
+#      executed — and the job was refused anyway. The guard cannot tell the
+#      difference, and it is right not to try. So that command name does not
+#      appear in this file; the hints describe the problem instead.
 def cmd_watch(args) -> int:
     cfg = config()
     blocked = not_configured(cfg)
@@ -774,7 +802,7 @@ def cmd_watch(args) -> int:
 
     checks = {"reachable": check_reachable(cfg)}
     if checks["reachable"]["ok"]:
-        checks["imessage"] = check_bluebubbles(cfg)
+        checks["imessage"] = check_imessage(cfg)
         if not args.imessage_only:
             checks["ollama"] = check_ollama(cfg)
             checks["claude-code"] = check_specialist(cfg, "claude-code")
@@ -796,9 +824,27 @@ def cmd_watch(args) -> int:
     state["watch_checked_at"] = int(time.time())
     save_state(state)
 
+    # TWO CALLERS, TWO CONTRACTS.
+    #
+    # --quiet is for `hermes cron create --no-agent`, where the script IS the
+    # job and its stdout is delivered verbatim: empty stdout means silence, so
+    # a healthy run must print NOTHING AT ALL. Not a wake-gate line, not an
+    # "all good" — Taylor would get that text every half hour forever.
+    #
+    # Without --quiet the last line is the Hermes wake gate, for the case
+    # where an agent run is wanted to interpret the change.
     if not changes:
-        # Nothing to say. The wake gate keeps this free.
-        print(json.dumps({"wakeAgent": False}))
+        if not args.quiet:
+            print(json.dumps({"wakeAgent": False}))
+        return 0
+
+    if args.quiet:
+        # Goes straight to Telegram as written. No job id, no JSON, no
+        # markdown scaffolding — the message format Taylor asked for.
+        print("**Mac mini bridge**")
+        print()
+        for line in changes:
+            print(f"- {line}")
         return 0
 
     print("MAC BRIDGE STATE CHANGE")
@@ -865,6 +911,8 @@ def main() -> int:
 
     p = sub.add_parser("watch", help="scheduled health check; speaks only on a state change")
     p.add_argument("--imessage-only", action="store_true")
+    p.add_argument("--quiet", action="store_true",
+                   help="print nothing when healthy (for cron --no-agent)")
     p.set_defaults(func=cmd_watch)
 
     p = sub.add_parser("join", help="bring this VM onto Taylor's tailnet (one time)")

@@ -46,11 +46,62 @@ run_one() {
   mkdir -p "$run_dir"
   tail -n +2 "$taskfile" > "$run_dir/TASK.md"
   rm -f "$taskfile"
+  # osascript cannot safely carry a multi-line body inline, so the text goes
+  # to a file the script reads. Quotes, apostrophes and newlines survive.
+  tail -n +2 "$run_dir/TASK.md" > "$run_dir/BODY.txt" 2>/dev/null || true
 
   log "start $id ($spec)"
   cd "$run_dir" || return
 
   case "$spec" in
+    imessage-probe)
+      # Health check that SENDS NOTHING. It asks Messages for the name of the
+      # iMessage account, which fails loudly if Messages is signed out, not
+      # running, or Automation permission was revoked — the three ways this
+      # lane dies quietly. Sending a probe text instead would work, and would
+      # also text Taylor every time the watchdog runs, which is the opposite
+      # of what he asked for.
+      # Do NOT try to render the account into text. `name of svc` returns a
+      # class icsv id that AppleScript refuses to coerce (-1700), which made
+      # the probe report a broken lane while sending worked perfectly. Binding
+      # the account is the whole test: it fails if Messages is signed out, not
+      # running, or Automation permission was revoked.
+      /usr/bin/osascript > RESULT.log 2>&1 <<'OSAP'
+tell application "Messages"
+  set svc to 1st account whose service type = iMessage
+  set _probe to id of svc
+  return "IMESSAGE-OK"
+end tell
+OSAP
+      ;;
+    imessage)
+      # Line 1 of TASK.md is the recipient; the rest is the message body.
+      #
+      # WHY APPLESCRIPT AND NOT BLUEBUBBLES. Taylor asked for one-way delivery
+      # of a few things a day. BlueBubbles exists to expose the WHOLE message
+      # history over HTTP, which means a server app, Full Disk Access to
+      # chat.db, a password to manage, and one more thing that can quit after
+      # an update. AppleScript needs none of that: Messages is already signed
+      # in, nothing listens on a port, and no history is read.
+      #
+      # It only works from HERE. Over ssh, Apple events are refused outright
+      # (-1743, "Not authorized to send Apple events"), the same GUI-session
+      # boundary that blocks Claude Code's Keychain.
+      TO="$(head -1 TASK.md)"
+      BODY="$(tail -n +2 TASK.md)"
+      /usr/bin/osascript > RESULT.log 2>&1 <<OSA
+on run
+  set theTo to "$TO"
+  set theBody to (do shell script "cat " & quoted form of "$run_dir/BODY.txt")
+  tell application "Messages"
+    set svc to 1st account whose service type = iMessage
+    set bud to participant theTo of svc
+    send theBody to bud
+  end tell
+  return "SENT"
+end run
+OSA
+      ;;
     codex)
       codex exec --skip-git-repo-check --sandbox workspace-write \
         "$(cat TASK.md)" > RESULT.log 2>&1 < /dev/null
@@ -69,7 +120,8 @@ run_one() {
     echo "exit=$rc"
     echo "---ARTIFACTS---"
     find . -type f ! -name 'TASK.md' ! -name 'RESULT.log' ! -name 'DONE' \
-      ! -name 'DONE.tmp' -newer TASK.md -print 2>/dev/null | sed 's|^\./||'
+      ! -name 'BODY.txt' ! -name 'DONE.tmp' -newer TASK.md -print 2>/dev/null \
+      | sed 's|^\./||'
   } > "$run_dir/DONE.tmp"
   mv "$run_dir/DONE.tmp" "$run_dir/DONE"
   log "done $id exit=$rc"
