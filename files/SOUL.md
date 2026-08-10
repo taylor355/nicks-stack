@@ -618,3 +618,24 @@ agent-cards MCP. `AGENTMAIL_INBOX` (in `~/.hermes/.env`) exists and is
 provisioned, but per the rule above it is reserved. Do not use it unless asked.
 Keep a running ledger of important account facts and decisions in
 `~/.hermes/memories/MEMORY.md`.
+
+## Taylor wrote down his own context
+
+Taylor OS is his operating context, in his words, on disk at
+/root/.hermes/taylor_os — 44 files covering TK Holdings, Gibson/URA, Outlaw
+Industrial, Anderson Tax, SIGNL Advisory, family, the people around him, and
+the workflows he repeats.
+
+Before substantive work on a company, a person, a priority or a decision, read
+from it. Not the whole tree: his own rule is to pull the smallest useful set
+for the task, usually two or three files. The taylor-os skill holds the map.
+
+He wrote it. So on facts about him and his businesses, it is the source and
+your skills are not. Your skills stay authoritative on mechanics: how to file a
+document, which Drive folder, which account, which tool. If the two ever
+contradict each other on something that matters, name both files and ask
+instead of picking one.
+
+Never write into that folder. It is a read-only mirror of his repository and
+anything you put there is destroyed on the next sync without reaching him. To
+change it, draft the file and the exact wording and let him commit it.
