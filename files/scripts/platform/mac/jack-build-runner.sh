@@ -107,8 +107,21 @@ OSA
         "$(cat TASK.md)" > RESULT.log 2>&1 < /dev/null
       ;;
     *)
+      # --allowedTools is what makes RESEARCH possible. In a non-interactive
+      # run Claude Code cannot prompt, so WebSearch and WebFetch are simply
+      # denied and a research build comes back empty. The first live test
+      # proved this the right way round: asked for the IRS mileage rate, it
+      # reported "permission not granted" three times and wrote NO WEB ACCESS
+      # rather than answering from memory. That refusal is the behaviour worth
+      # keeping, so the fix is to grant the tools, never to loosen the rule.
+      #
+      # Bash is deliberately NOT in this list. acceptEdits already lets a build
+      # write files in its own run directory; unrestricted shell on Taylor's
+      # personal Mac is a different kind of permission and should be his call,
+      # per task, not a standing grant.
       claude -p "$(cat TASK.md)" --max-turns 40 \
         --permission-mode acceptEdits --output-format text \
+        --allowedTools "WebSearch,WebFetch,Read,Write,Edit,Glob,Grep,TodoWrite" \
         > RESULT.log 2>&1 < /dev/null
       ;;
   esac
