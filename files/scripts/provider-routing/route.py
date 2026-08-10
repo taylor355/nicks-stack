@@ -294,8 +294,26 @@ def run_oneshot(mode: dict, prompt: str, toolsets: str | None, timeout: int,
 
     v1.0.3: `profile` selects a runtime profile. `run` deliberately passes
     none — real work needs the full runtime, tools included. Only `probe`
-    (unattended liveness, no tools) runs lean."""
+    (unattended liveness, no tools) runs lean.
+
+    v1.1.34: a MODE may now declare its own profile, and it wins when the
+    caller names none. `local` needs this and is not a special case being
+    smuggled in: config.yaml sets agent.reasoning_effort globally, Ollama
+    answers HTTP 400 "does not support thinking" for models without it, and
+    turning reasoning off globally would quietly degrade the Anthropic tiers
+    Taylor actually works on. A profile carries its own config.yaml, so the
+    setting lands on exactly the route that needs it. Verified: without this
+    `run local` failed and correctly refused to fall back to a paid route."""
     cmd = build_cmd(mode, prompt, toolsets, max_turns)
+    profile = profile or mode.get("profile")
+    # Build or refresh the derived profile before using it. Hermes WRITES a
+    # stub config.yaml into any HERMES_HOME it finds empty, so a hand-copied
+    # profile config does not survive first contact — the local profile's
+    # config was replaced by a 3-byte stub on its first run, and the next run
+    # failed with "Unknown provider 'custom:ollama'". profile_ensure derives it
+    # from the real config.yaml and re-derives whenever that changes.
+    if profile:
+        platform_lib.profile_ensure(profile)
     try:
         proc = platform_lib.hermes_run(
             cmd, timeout,

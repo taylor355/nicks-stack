@@ -637,6 +637,26 @@ def derive_profile_config(cfg: dict, routing: dict, spec: dict) -> dict:
         keep["env"] = trimmed
         out["secrets"] = {"onepassword": keep}
 
+    # DECLARED OVERRIDES (v1.1.34). Everything above SUBSETS the real config;
+    # this is the one place a profile may state a different VALUE. Added for
+    # `local`, which needs agent.reasoning_effort off because Ollama returns
+    # HTTP 400 "does not support thinking" for models that lack it — and
+    # turning it off globally would degrade the Anthropic tiers instead.
+    #
+    # Deep-merged one level so a profile can change a single key without
+    # restating the whole block, and applied AFTER the includes so it always
+    # wins. _NEVER_IN_DERIVED still applies: a declaration cannot override
+    # safety.
+    for block, value in ((spec or {}).get("overrides") or {}).items():
+        if block in _NEVER_IN_DERIVED:
+            continue
+        if isinstance(value, dict) and isinstance(out.get(block), dict):
+            merged = dict(out[block]); merged.update(value); out[block] = merged
+        elif isinstance(value, dict) and isinstance(cfg.get(block), dict):
+            merged = dict(cfg[block]); merged.update(value); out[block] = merged
+        else:
+            out[block] = value
+
     if include.get("ephemeral"):
         # No memory writes, no session reset machinery, no onboarding prompts.
         out["memory"] = {"memory_enabled": False, "user_profile_enabled": False}
@@ -1222,13 +1242,51 @@ def services_detect() -> dict:
 # --------------------------------------------------------------------------
 # Ollama — the single implementation every tool uses
 # --------------------------------------------------------------------------
+def _routing_ollama_host() -> str:
+    """routing.yaml modes.local host/port, or "" when not configured.
+
+    ADDED v1.1.34 because the reporting lied. The `local` mode moved to the
+    Mac mini (reached on a forwarded port), routing.yaml said so, and
+    `nicks-stack-route show local` still printed the models on THIS VM —
+    qwen3:1.7b and qwen3:4b, neither of which local mode would ever use. The
+    route map and the availability line have to read the same address or the
+    report is worse than none."""
+    mode = ((load_yaml(ROUTING_FILE).get("modes") or {}).get("local") or {})
+    host = str(mode.get("host") or "").strip()
+    if not host:
+        return ""
+    if not host.startswith("http"):
+        host = f"http://{host}"
+    port = mode.get("port")
+    if port and ":" not in host.split("//", 1)[-1]:
+        host = f"{host}:{int(port)}"
+    return host.rstrip("/")
+
+
 def ollama_host(spec: dict | None = None) -> str:
+    # PRECEDENCE, and it matters. routing.yaml is the declared map of where
+    # `local` runs, so it outranks ~/.hermes/.env — which carried a stale
+    # 127.0.0.1:11434 from when Ollama ran on this VM and silently won,
+    # producing a route that named llama3.1:8b while reporting the VM's toy
+    # models as available. An explicitly exported OLLAMA_HOST still wins, for
+    # one-off testing.
+    #
+    # THE PORT IS SEPARATE FROM THE HOST in routing.yaml, and callers pass the
+    # mode dict straight through as `spec`. So a spec host of "127.0.0.1"
+    # arrives with its port sitting in a sibling key, and joining them here is
+    # the whole reason this function exists — the first version dropped the
+    # port and reported "no daemon at http://127.0.0.1".
+    spec = spec or {}
+    port = spec.get("port")
     host = (os.environ.get("OLLAMA_HOST", "").strip()
+            or str(spec.get("host") or "").strip()
+            or _routing_ollama_host()
             or _env_file_value("OLLAMA_HOST")
-            or (spec or {}).get("host")
             or DEFAULT_OLLAMA_HOST)
     if not host.startswith("http"):
         host = f"http://{host}"
+    if port and ":" not in host.split("//", 1)[-1]:
+        host = f"{host}:{int(port)}"
     return host.rstrip("/")
 
 
