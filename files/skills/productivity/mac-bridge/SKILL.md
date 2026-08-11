@@ -150,14 +150,15 @@ text budget is small:
 | 9:30am | daily-wisdom | Code of the West principle, quote, a fresh reflection. Also to McKell. |
 | 9:00pm | nightly-briefing | Tomorrow's schedule, top three, overdue tasks, conflicts |
 | 9:00pm | four-f-checkin | A link to his Four F check-in |
-| 10:30pm | four-f-nudge | Only if no check-in was logged that day |
 
-Four texts on a day he does not check in, three when he does. That is already
+Three texts a day, and two of them land together at 9:00pm. That is already
 most of what a person will tolerate, so your own six-a-day cap is a ceiling,
-not a target: assume the day's text budget is nearly spent before you use it.
+not a target: assume the day's budget is nearly spent before you use any of it.
 
-Two of those land at 9:00pm together. If Taylor mentions it reading as noise,
-the fix is a one-line time change in the check-in's schedule, not dropping a job.
+A 10:30pm nudge existed and Taylor removed it the same evening he saw it. Read
+that as the standing preference it is: he will take a scheduled reminder, but
+not a second message chasing the first. Do not propose follow-up nudges, and
+never text him twice about the same thing.
 
 ## When he asks where to set this up
 
