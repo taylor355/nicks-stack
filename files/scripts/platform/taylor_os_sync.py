@@ -169,8 +169,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Keep Taylor OS in step with GitHub")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--force", action="store_true")
-    ap.add_argument("--quiet", action="store_true",
-                    help="print nothing when nothing changed (for cron --no-agent)")
+    ap.add_argument("--gate", action="store_true",
+                    help="emit the cron wake-gate JSON line (agent-backed runs)")
     args = ap.parse_args()
 
     if args.status:
@@ -204,7 +204,7 @@ def main() -> int:
             print("**Taylor OS sync failed**")
             print()
             print(result["error"])
-        if not args.quiet:
+        if args.gate:
             print(json.dumps({"wakeAgent": False}))
         return 2
 
@@ -219,7 +219,7 @@ def main() -> int:
         print()
         for line in lines:
             print(f"- {line}")
-    if not args.quiet:
+    if args.gate:
         print(json.dumps({"wakeAgent": False}))
     return 0
 

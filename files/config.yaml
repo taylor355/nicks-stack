@@ -65,7 +65,7 @@ providers:
   # always passed per call with -m, because what is pulled is machine-specific.
   ollama:
     name: Ollama (local)
-    base_url: http://127.0.0.1:11434/v1
+    base_url: http://127.0.0.1:11435/v1
     key_env: OLLAMA_API_KEY
     transport: chat_completions
 agent:
@@ -319,8 +319,14 @@ secrets:
       TELEGRAM_BOT_TOKEN: op://Hermes/Hermes Agent Secrets/TELEGRAM_BOT_TOKEN
       AGENTMAIL_API_KEY: op://Hermes/Hermes Agent Secrets/AGENTMAIL_API_KEY
       AGENTPHONE_API_KEY: op://Hermes/Hermes Agent Secrets/AGENTPHONE_API_KEY
-      GITHUB_TOKEN: op://Hermes/Hermes Agent Secrets/GITHUB_PAT
-      GH_TOKEN: op://Hermes/Hermes Agent Secrets/GITHUB_PAT
+      # Taylor keeps this as its own vault item rather than a field on the
+      # shared secrets item, which is better practice: it rotates and expires
+      # independently, and 1Password Watchtower can track it. Referenced by
+      # item TITLE to match the convention above — renaming the item in
+      # 1Password breaks this line, and `taylor_os_sync.py --status` is where
+      # that would show up.
+      GITHUB_TOKEN: op://Hermes/GitHub Personal Access Token - jack-taylor-os-read/token
+      GH_TOKEN: op://Hermes/GitHub Personal Access Token - jack-taylor-os-read/token
       EXA_API_KEY: op://Hermes/Hermes Agent Secrets/EXA_API_KEY
       FIRECRAWL_API_KEY: op://Hermes/Hermes Agent Secrets/FIRECRAWL_API_KEY
       BROWSER_USE_API_KEY: op://Hermes/Hermes Agent Secrets/BROWSER_USE_API_KEY
