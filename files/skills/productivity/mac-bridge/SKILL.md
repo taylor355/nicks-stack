@@ -139,6 +139,26 @@ useful if an API is down.
 `mac_bridge.py models` reports what is actually pulled. If nothing is, say so
 and name the pull command rather than guessing a model.
 
+## What already texts him, and when
+
+These run on the Mac itself under launchd, not through you. Know them, because
+Taylor will ask "what sent me that" and because they are the reason your own
+text budget is small:
+
+| Time | Job | What it sends |
+|---|---|---|
+| 9:30am | daily-wisdom | Code of the West principle, quote, a fresh reflection. Also to McKell. |
+| 9:00pm | nightly-briefing | Tomorrow's schedule, top three, overdue tasks, conflicts |
+| 9:00pm | four-f-checkin | A link to his Four F check-in |
+| 10:30pm | four-f-nudge | Only if no check-in was logged that day |
+
+Four texts on a day he does not check in, three when he does. That is already
+most of what a person will tolerate, so your own six-a-day cap is a ceiling,
+not a target: assume the day's text budget is nearly spent before you use it.
+
+Two of those land at 9:00pm together. If Taylor mentions it reading as noise,
+the fix is a one-line time change in the check-in's schedule, not dropping a job.
+
 ## When he asks where to set this up
 
 The answer is the Mac mini, at a keyboard. Not this VM, not claude.ai, not his
