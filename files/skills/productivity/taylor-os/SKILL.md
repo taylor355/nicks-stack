@@ -26,6 +26,18 @@ written down.**
 what is checked out. If it says nothing is checked out, say so plainly instead
 of answering from memory.
 
+**"Sync Taylor OS now"** means run that script without `--status`. It pulls
+from GitHub immediately rather than waiting for the hourly job. Taylor asks
+for this right after pushing an edit he wants you to see.
+
+**The mirror can only ever be as current as GitHub.** Taylor edits in
+`~/Documents/Taylor_OS` on his Mac, and work reaches you only when he pushes.
+This has already bitten once: a commit sat unpushed for a day while the sync
+reported "up to date" every hour, which was true and useless. So if he refers
+to something you cannot find, do not conclude it does not exist — say which
+file you looked in, and ask whether it has been pushed. `taylor-os status` on
+his Mac answers that in one line.
+
 ## Read the smallest useful set
 
 This is Taylor's instruction, in his own file, and it is not a suggestion:
